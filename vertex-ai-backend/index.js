@@ -5737,7 +5737,17 @@ if (unmappedQuestions.length === 0) return { mappings: [] };
     });
     resolvedPositions.sort((a, b) => a.pos - b.pos);
 
-    const mappings = [];
+    // First pass: compute each unmapped question's candidate gap without
+    // committing to it yet. Multiple unmapped questions can land between the
+    // SAME pair of resolved neighbors (e.g. 9 questions all missed on one
+    // page) — positionally that's one shared gap, not 9 distinct ones, so
+    // handing the WHOLE span to every one of them duplicates the same text
+    // across unrelated questions. Only claim a gap when exactly ONE unmapped
+    // question owns it (the original "no ambiguity about which gap it is"
+    // case this function was designed for); when several share a gap, leave
+    // all of them unassigned so they fall through to the real LLM rescue,
+    // which can actually read the text and split it correctly.
+    const candidates = [];
 
     unmappedQuestions.forEach(uq => {
         const normUq = normalizeForComparison(uq.questionNumber);
@@ -5765,6 +5775,22 @@ if (unmappedQuestions.length === 0) return { mappings: [] };
             return;
         }
 
+        candidates.push({ uq, gapStart, gapEnd, gapText });
+    });
+
+    const gapOwners = new Map(); // "start-end" -> count of candidates sharing it
+    candidates.forEach(c => {
+        const key = `${c.gapStart}-${c.gapEnd}`;
+        gapOwners.set(key, (gapOwners.get(key) || 0) + 1);
+    });
+
+    const mappings = [];
+    candidates.forEach(({ uq, gapStart, gapEnd, gapText }) => {
+        const key = `${gapStart}-${gapEnd}`;
+        if (gapOwners.get(key) > 1) {
+            console.log(`[GapSpan] Skipping Q${uq.questionNumber}: gap chars ${gapStart}-${gapEnd} is shared by ${gapOwners.get(key)} unmapped questions — ambiguous, deferring to LLM rescue instead of duplicating`);
+            return;
+        }
         // Extract [#P:] tags from the gap for pageMap
         const tags = [...gapText.matchAll(/\[#P:\d+,\d+,\d+\]/g)].map(m => m[0]);
 
@@ -5777,7 +5803,8 @@ if (unmappedQuestions.length === 0) return { mappings: [] };
 
 /**
  * LLM Orphan Rescue — fires ONLY when deterministic resolution leaves gaps.
- * Uses gemini-2.0-flash (cheapest model).
+ * Uses gemini-2.5-flash (gemini-2.0-flash was retired/unavailable in this
+ * project — was silently 404ing on every call, see git log).
  * Sends ONLY the orphan lines + candidate question IDs. NOT the full transcript.
  * Typical prompt: ~500 tokens vs the 50,000-token full librarian call.
  */
@@ -5861,7 +5888,7 @@ const candidateQids = questions
     if (finalCandidates.length === 0) return { mappings: [] };
 
 const model = vertex_ai.getGenerativeModel({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         generationConfig: {
             temperature: 0,
             responseMimeType: 'application/json',
@@ -6135,7 +6162,7 @@ unresolvedBoundaries = result.unresolvedBoundaries;
             console.log(`[Librarian] Deterministic: ${deterministicCoverage}/${masterIds.length} questions mapped. Orphan tags: ${orphanTags.length}. Unresolved boundaries: ${unresolvedBoundaries.length}`);
 
             // STAGE 2: LLM Rescue — fires only when there are orphan tags or
-            //   unresolved boundary labels. Uses gemini-2.0-flash with a
+            //   unresolved boundary labels. Uses gemini-2.5-flash with a
             //   tiny prompt (just orphan lines, not the full transcript).
   let rescueMappings = { mappings: [] };
             // Also fire rescue for questions deterministic completely missed (no QLABEL emitted at all)
@@ -6332,7 +6359,7 @@ if (fullTranscript.trim().length > 20) {
                         }));
 
                         const rescueModel = vertex_ai.getGenerativeModel({
-                            model: 'gemini-2.0-flash',
+                            model: 'gemini-2.5-flash',
                             generationConfig: { temperature: 0, responseMimeType: 'application/json' }
                         });
 
@@ -7385,7 +7412,7 @@ const slicedTranscript = batch.map(q => {
                 // Problem: MCQ subparts (e.g. Q1(i) and Q1(ii)) share the same inherited
                 // text block. The deterministic letter extractor can't anchor reliably,
                 // and the grader LLM gets confused because it sees the same text for both.
-                // Solution: before grading, make ONE cheap gemini-2.0-flash call per
+                // Solution: before grading, make ONE cheap gemini-2.5-flash call per
                 // subpart family to extract which letter the student wrote for each subpart.
                 // Result stamped on q._resolvedMcqLetter — used in MCQ override block.
                 // ─────────────────────────────────────────────────────────────────────
@@ -7439,7 +7466,7 @@ Respond ONLY with a JSON object, no other text:
 Use null for fields that do not apply. If you cannot determine anything for a sub-part, set both to null.`;
 
                         try {
-                            const miniModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+                            const miniModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
                             const miniResult = await miniModel.generateContent({
                                 contents: [{ role: 'user', parts: [{ text: extractPrompt }] }],
                                 generationConfig: { temperature: 0.0, maxOutputTokens: 256 }
@@ -8609,7 +8636,7 @@ unresolvedBoundaries = result.unresolvedBoundaries;
             console.log(`[Librarian] Deterministic: ${deterministicCoverage}/${masterIds.length} questions mapped. Orphan tags: ${orphanTags.length}. Unresolved boundaries: ${unresolvedBoundaries.length}`);
 
             // STAGE 2: LLM Rescue — fires only when there are orphan tags or
-            //   unresolved boundary labels. Uses gemini-2.0-flash with a
+            //   unresolved boundary labels. Uses gemini-2.5-flash with a
             //   tiny prompt (just orphan lines, not the full transcript).
   let rescueMappings = { mappings: [] };
             // Also fire rescue for questions deterministic completely missed (no QLABEL emitted at all)
@@ -8806,7 +8833,7 @@ if (fullTranscript.trim().length > 20) {
                         }));
 
                         const rescueModel = vertex_ai.getGenerativeModel({
-                            model: 'gemini-2.0-flash',
+                            model: 'gemini-2.5-flash',
                             generationConfig: { temperature: 0, responseMimeType: 'application/json' }
                         });
 
@@ -9803,7 +9830,7 @@ const slicedTranscript = batch.map(q => {
                 // Problem: MCQ subparts (e.g. Q1(i) and Q1(ii)) share the same inherited
                 // text block. The deterministic letter extractor can't anchor reliably,
                 // and the grader LLM gets confused because it sees the same text for both.
-                // Solution: before grading, make ONE cheap gemini-2.0-flash call per
+                // Solution: before grading, make ONE cheap gemini-2.5-flash call per
                 // subpart family to extract which letter the student wrote for each subpart.
                 // Result stamped on q._resolvedMcqLetter — used in MCQ override block.
                 // ─────────────────────────────────────────────────────────────────────
@@ -9857,7 +9884,7 @@ Respond ONLY with a JSON object, no other text:
 Use null for fields that do not apply. If you cannot determine anything for a sub-part, set both to null.`;
 
                         try {
-                            const miniModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+                            const miniModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
                             const miniResult = await miniModel.generateContent({
                                 contents: [{ role: 'user', parts: [{ text: extractPrompt }] }],
                                 generationConfig: { temperature: 0.0, maxOutputTokens: 256 }
