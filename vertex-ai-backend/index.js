@@ -364,6 +364,30 @@ function normalizeForComparison(str) {
         .trim();
 }
 
+// Loose id-equality for librarian merge/slice comparisons. Strict-equal first
+// (identical to plain normalizeForComparison(a) === normalizeForComparison(b)
+// for every case that already worked). Only when that fails does it fold a
+// lettered sub-part onto its bare numeric parent (e.g. "17A" vs "17") — and
+// only when the lettered form has no master of its own, mirroring the guard
+// already proven in matchLabelToMasterId's "sub-part folded into parent"
+// fallback. Two lettered siblings (e.g. "21A" vs "21B", real OR-pairs) never
+// fold into each other, so distinct alternative-choice questions stay distinct.
+function qNumsMatch(a, b, masterIds) {
+    const na = normalizeForComparison(a);
+    const nb = normalizeForComparison(b);
+    if (na === nb) return true;
+    const rootA = na.match(/^(\d+)/)?.[1];
+    const rootB = nb.match(/^(\d+)/)?.[1];
+    if (!rootA || !rootB || rootA !== rootB) return false;
+    const aIsBare = na === rootA;
+    const bIsBare = nb === rootB;
+    if (aIsBare === bIsBare) return false; // both bare (already caught above) or both lettered (distinct sub-parts) — never fold
+    const letteredLabel = aIsBare ? nb : na;
+    const normMasters = (masterIds || []).map(id => normalizeForComparison(id));
+    if (normMasters.includes(letteredLabel)) return false; // lettered form is its own real question — don't merge
+    return true;
+}
+
 /**
  * FIX #5: Validates and normalizes ERP question objects to the internal schema.
  * Prevents silent failures in the librarian/grader when fields are missing.
@@ -6115,8 +6139,7 @@ unresolvedBoundaries = result.unresolvedBoundaries;
             //   tiny prompt (just orphan lines, not the full transcript).
   let rescueMappings = { mappings: [] };
             // Also fire rescue for questions deterministic completely missed (no QLABEL emitted at all)
-            const deterministicMappedIds = new Set(deterministicMappings.map(m => normalizeForComparison(m.id)));
-            const unmappedAfterDeterministic = questions.filter(q => !deterministicMappedIds.has(normalizeForComparison(q.questionNumber)));
+            const unmappedAfterDeterministic = questions.filter(q => !deterministicMappings.some(m => qNumsMatch(m.id, q.questionNumber, masterIds)));
 if (orphanTags.length > 0 || unresolvedBoundaries.length > 0 || unmappedAfterDeterministic.length > 0) {
                 console.log(`[Librarian] Escalating to rescue: ${orphanTags.length} orphan tags, ${unresolvedBoundaries.length} unresolved boundaries, ${unmappedAfterDeterministic.length} fully-missed questions`);
 
@@ -6145,13 +6168,13 @@ const gapMappings = gapSpanPositionalAssignment(
                         console.log(`[GapSpan] Assigned ${gapMappings.mappings.length} questions via gap-span`);
                         gapMappings.mappings.forEach(gm => {
                             const existIdx = deterministicMappings.findIndex(m =>
-                                normalizeForComparison(m.id) === normalizeForComparison(gm.id));
+                                qNumsMatch(m.id, gm.id, masterIds));
                             if (existIdx === -1) deterministicMappings.push(gm);
                         });
                         // Mark these as needing review
                         gapMappings.mappings.forEach(gm => {
                             const q = questions.find(q =>
-                                normalizeForComparison(q.questionNumber) === normalizeForComparison(gm.id));
+                                qNumsMatch(q.questionNumber, gm.id, masterIds));
                             if (q) q._gapSpanAssigned = true;
                         });
                     }
@@ -6160,7 +6183,7 @@ const gapMappings = gapSpanPositionalAssignment(
                 // STAGE 2b: LLM rescue only for remaining orphan tags (misassigned, not missed)
                 const stillUnmapped = questions.filter(q =>
                     !deterministicMappings.find(m =>
-                        normalizeForComparison(m.id) === normalizeForComparison(q.questionNumber)));
+                        qNumsMatch(m.id, q.questionNumber, masterIds)));
 if (orphanTags.length > 0 || unresolvedBoundaries.length > 0) {
                     const resolvedContext = deterministicMappings.map(m => ({
                         id: m.id,
@@ -6212,7 +6235,7 @@ else if (coverageRatio < rescueThreshold) {
                 const mergedForCoverage = [...deterministicMappings];
                 (rescueMappings?.mappings || []).forEach(rm => {
                     const existingIdx = mergedForCoverage.findIndex(m =>
-                        normalizeForComparison(m.id) === normalizeForComparison(rm.id)
+                        qNumsMatch(m.id, rm.id, masterIds)
                     );
                     if (existingIdx !== -1) {
                         mergedForCoverage[existingIdx].tags = [
@@ -6235,7 +6258,7 @@ else if (coverageRatio < rescueThreshold) {
                 const mergedMappings = [...deterministicMappings];
                 (rescueMappings?.mappings || []).forEach(rm => {
                     const existingIdx = mergedMappings.findIndex(m =>
-                        normalizeForComparison(m.id) === normalizeForComparison(rm.id)
+                        qNumsMatch(m.id, rm.id, masterIds)
                     );
                     if (existingIdx !== -1) {
                         // Merge tags, deduplicate
@@ -6261,8 +6284,7 @@ else if (coverageRatio < rescueThreshold) {
 
 // Also rescue questions whose tags are all on wrong pages (stolen by stray QLABEL)
 const zeroTagQuestions = questions.filter(q => {
-    const key = normalizeForComparison(q.questionNumber);
-    const existing = tagMapping.mappings.find(m => normalizeForComparison(m.id) === key);
+    const existing = tagMapping.mappings.find(m => qNumsMatch(m.id, q.questionNumber, masterIds));
     if (!existing || existing.tags.length === 0) return true;
     // Check if ALL tags are on page 1-2 but question is in later half of paper
     const qIdx = questions.indexOf(q);
@@ -6284,8 +6306,7 @@ const zeroTagQuestions = questions.filter(q => {
                     // EXCEPTION: if zeroTagQuestions have zero tags (not stolen-page case),
                     // the relevant lines ARE mapped (stolen by prior question). Send full transcript.
                     const trueZeroTag = zeroTagQuestions.filter(q => {
-                        const key = normalizeForComparison(q.questionNumber);
-                        const existing = tagMapping.mappings.find(m => normalizeForComparison(m.id) === key);
+                        const existing = tagMapping.mappings.find(m => qNumsMatch(m.id, q.questionNumber, masterIds));
                         return !existing || existing.tags.length === 0;
                     });
                     const allLines = fullTranscript.split('\n');
@@ -6347,7 +6368,7 @@ Return ONLY valid JSON:
 
                             (secondRescue?.mappings || []).forEach(rm => {
                                 const existingIdx = tagMapping.mappings.findIndex(m =>
-                                    normalizeForComparison(m.id) === normalizeForComparison(rm.id)
+                                    qNumsMatch(m.id, rm.id, masterIds)
                                 );
                                 if (existingIdx !== -1) {
                                     tagMapping.mappings[existingIdx].tags = [
@@ -6371,11 +6392,11 @@ Return ONLY valid JSON:
                 // that is far earlier than the question's expected page range.
                 // If ALL tags are on page 1 but the question appears on page 6+, reject them.
                 tagMapping.mappings.forEach(m => {
-                    const qObj = questions.find(q => normalizeForComparison(q.questionNumber) === normalizeForComparison(m.id));
+                    const qObj = questions.find(q => qNumsMatch(q.questionNumber, m.id, masterIds));
                     if (!qObj || !m.tags || m.tags.length === 0) return;
 
                     // Find what page this question's [QLABEL] was found on (from deterministic pass)
-                    const detMapping = deterministicMappings.find(dm => normalizeForComparison(dm.id) === normalizeForComparison(m.id));
+                    const detMapping = deterministicMappings.find(dm => qNumsMatch(dm.id, m.id, masterIds));
                     if (detMapping && detMapping.tags.length > 0) return; // deterministic got it right — don't second-guess
 
                     // Get pages of ALL assigned tags
@@ -6403,13 +6424,13 @@ Return ONLY valid JSON:
 
   let effectiveQLabelPage = qLabelPage;
 if (effectiveQLabelPage === 0) {
-    const qIndex = questions.findIndex(q => normalizeForComparison(q.questionNumber) === normalizeForComparison(m.id));
+    const qIndex = questions.findIndex(q => qNumsMatch(q.questionNumber, m.id, masterIds));
     if (qIndex > 0) {
         // Estimate: earlier questions have lower page numbers
         // Use the page of the nearest preceding question that DID get tags
         for (let qi = qIndex - 1; qi >= 0; qi--) {
             const prevQ = questions[qi];
-            const prevMapping = tagMapping.mappings.find(pm => normalizeForComparison(pm.id) === normalizeForComparison(prevQ.questionNumber));
+            const prevMapping = tagMapping.mappings.find(pm => qNumsMatch(pm.id, prevQ.questionNumber, masterIds));
             if (prevMapping && prevMapping.tags.length > 0) {
                 const prevPages = prevMapping.tags.map(t => {
                     const pm = t.match(/\[#P:(\d+),/);
@@ -6446,7 +6467,15 @@ mappingsArr.forEach(m => {
 });
 questions.forEach(q => {
     const normKey = normalizeForComparison(q.questionNumber);
-    questionMappings.set(q._uid, mappingsByNormKey.get(normKey) || null);
+    let mapping = mappingsByNormKey.get(normKey);
+    if (!mapping) {
+        // Fallback: fold a lettered mapping id (e.g. "17A") onto this question's
+        // bare numeric parent (e.g. "17") when no exact normalized-key match
+        // exists — same guarded rule as qNumsMatch, only fires on the specific
+        // case that previously fell through to null.
+        mapping = mappingsArr.find(m => qNumsMatch(m.id, q.questionNumber, masterIds)) || null;
+    }
+    questionMappings.set(q._uid, mapping);
 });
 
 const atomicSlices = sliceByAtomicLines(fullTranscript, tagMapping);
@@ -6456,7 +6485,7 @@ const atomicSlices = sliceByAtomicLines(fullTranscript, tagMapping);
 // For these, slice the text directly between their QLABEL and the next QLABEL.
 questions.forEach(q => {
     const qKey = normalizeForComparison(q.questionNumber);
-    const existing = tagMapping.mappings.find(m => normalizeForComparison(m.id) === qKey);
+    const existing = tagMapping.mappings.find(m => qNumsMatch(m.id, q.questionNumber, masterIds));
     if (existing && existing.tags.length > 0) return; // already has tags, skip
     if (atomicSlices[qKey] && atomicSlices[qKey].length > 10) return; // already sliced
     // Find this question's QLABEL in the transcript
@@ -6464,8 +6493,7 @@ questions.forEach(q => {
     let prevQL = null, myQL = null, nextQL = null;
     let m;
     while ((m = qlRe.exec(fullTranscript)) !== null) {
-        const norm = normalizeForComparison(m[1]);
-        if (norm === qKey && !myQL) { myQL = m; continue; }
+        if (qNumsMatch(m[1], q.questionNumber, masterIds) && !myQL) { myQL = m; continue; }
         if (myQL) { nextQL = m; break; }
         if (!myQL) prevQL = m; // track last QLABEL before ours
     }
@@ -6760,7 +6788,21 @@ if (ownMapping && ownMapping._gapText) {
                     const isOR = /alternative question \(or\)/i.test(q.checkingInstructions || '') || /\.[AB]$/i.test(String(q.questionNumber));
                     const own = isOR
                         ? labelHits.filter(h => h.root === myRoot).sort((a, b) => a.pos - b.pos)[0]
-                        : labelHits.find(h => h.norm === myNorm && !h.used);
+                        : labelHits.find(h => h.norm === myNorm && !h.used)
+                          // Fallback: fold a lettered OCR label (e.g. "16A") onto this
+                          // question's bare numeric id (e.g. "16") — only when the lettered
+                          // form isn't itself a real separate master question. Mirrors the
+                          // guard already proven in matchLabelToMasterId's "sub-part folded
+                          // into parent" fallback. Non-OR path only — OR pairs are handled
+                          // entirely by the branch above and never reach this fallback.
+                          || labelHits.find(h => {
+                              if (h.used || h.root !== myRoot) return false;
+                              const hIsBare = h.norm === h.root;
+                              const myIsBare = myNorm === myRoot;
+                              if (hIsBare === myIsBare) return false;
+                              const letteredLabel = hIsBare ? myNorm : h.norm;
+                              return !masterIds.some(id => normalizeLabelForMatch(id, masterIds) === letteredLabel);
+                          });
                     if (!own) continue;
                     // Slice from just after the own label to the next label of a DIFFERENT root.
                     let sliceEnd = fullTranscript.length;
@@ -8573,8 +8615,7 @@ unresolvedBoundaries = result.unresolvedBoundaries;
             //   tiny prompt (just orphan lines, not the full transcript).
   let rescueMappings = { mappings: [] };
             // Also fire rescue for questions deterministic completely missed (no QLABEL emitted at all)
-            const deterministicMappedIds = new Set(deterministicMappings.map(m => normalizeForComparison(m.id)));
-            const unmappedAfterDeterministic = questions.filter(q => !deterministicMappedIds.has(normalizeForComparison(q.questionNumber)));
+            const unmappedAfterDeterministic = questions.filter(q => !deterministicMappings.some(m => qNumsMatch(m.id, q.questionNumber, masterIds)));
 if (orphanTags.length > 0 || unresolvedBoundaries.length > 0 || unmappedAfterDeterministic.length > 0) {
                 console.log(`[Librarian] Escalating to rescue: ${orphanTags.length} orphan tags, ${unresolvedBoundaries.length} unresolved boundaries, ${unmappedAfterDeterministic.length} fully-missed questions`);
 
@@ -8603,13 +8644,13 @@ const gapMappings = gapSpanPositionalAssignment(
                         console.log(`[GapSpan] Assigned ${gapMappings.mappings.length} questions via gap-span`);
                         gapMappings.mappings.forEach(gm => {
                             const existIdx = deterministicMappings.findIndex(m =>
-                                normalizeForComparison(m.id) === normalizeForComparison(gm.id));
+                                qNumsMatch(m.id, gm.id, masterIds));
                             if (existIdx === -1) deterministicMappings.push(gm);
                         });
                         // Mark these as needing review
                         gapMappings.mappings.forEach(gm => {
                             const q = questions.find(q =>
-                                normalizeForComparison(q.questionNumber) === normalizeForComparison(gm.id));
+                                qNumsMatch(q.questionNumber, gm.id, masterIds));
                             if (q) q._gapSpanAssigned = true;
                         });
                     }
@@ -8618,7 +8659,7 @@ const gapMappings = gapSpanPositionalAssignment(
                 // STAGE 2b: LLM rescue only for remaining orphan tags (misassigned, not missed)
                 const stillUnmapped = questions.filter(q =>
                     !deterministicMappings.find(m =>
-                        normalizeForComparison(m.id) === normalizeForComparison(q.questionNumber)));
+                        qNumsMatch(m.id, q.questionNumber, masterIds)));
 if (orphanTags.length > 0 || unresolvedBoundaries.length > 0) {
                     const resolvedContext = deterministicMappings.map(m => ({
                         id: m.id,
@@ -8670,7 +8711,7 @@ else if (coverageRatio < rescueThreshold) {
                 const mergedForCoverage = [...deterministicMappings];
                 (rescueMappings?.mappings || []).forEach(rm => {
                     const existingIdx = mergedForCoverage.findIndex(m =>
-                        normalizeForComparison(m.id) === normalizeForComparison(rm.id)
+                        qNumsMatch(m.id, rm.id, masterIds)
                     );
                     if (existingIdx !== -1) {
                         mergedForCoverage[existingIdx].tags = [
@@ -8693,7 +8734,7 @@ else if (coverageRatio < rescueThreshold) {
                 const mergedMappings = [...deterministicMappings];
                 (rescueMappings?.mappings || []).forEach(rm => {
                     const existingIdx = mergedMappings.findIndex(m =>
-                        normalizeForComparison(m.id) === normalizeForComparison(rm.id)
+                        qNumsMatch(m.id, rm.id, masterIds)
                     );
                     if (existingIdx !== -1) {
                         // Merge tags, deduplicate
@@ -8719,8 +8760,7 @@ else if (coverageRatio < rescueThreshold) {
 
 // Also rescue questions whose tags are all on wrong pages (stolen by stray QLABEL)
 const zeroTagQuestions = questions.filter(q => {
-    const key = normalizeForComparison(q.questionNumber);
-    const existing = tagMapping.mappings.find(m => normalizeForComparison(m.id) === key);
+    const existing = tagMapping.mappings.find(m => qNumsMatch(m.id, q.questionNumber, masterIds));
     if (!existing || existing.tags.length === 0) return true;
     // Check if ALL tags are on page 1-2 but question is in later half of paper
     const qIdx = questions.indexOf(q);
@@ -8742,8 +8782,7 @@ const zeroTagQuestions = questions.filter(q => {
                     // EXCEPTION: if zeroTagQuestions have zero tags (not stolen-page case),
                     // the relevant lines ARE mapped (stolen by prior question). Send full transcript.
                     const trueZeroTag = zeroTagQuestions.filter(q => {
-                        const key = normalizeForComparison(q.questionNumber);
-                        const existing = tagMapping.mappings.find(m => normalizeForComparison(m.id) === key);
+                        const existing = tagMapping.mappings.find(m => qNumsMatch(m.id, q.questionNumber, masterIds));
                         return !existing || existing.tags.length === 0;
                     });
                     const allLines = fullTranscript.split('\n');
@@ -8805,7 +8844,7 @@ Return ONLY valid JSON:
 
                             (secondRescue?.mappings || []).forEach(rm => {
                                 const existingIdx = tagMapping.mappings.findIndex(m =>
-                                    normalizeForComparison(m.id) === normalizeForComparison(rm.id)
+                                    qNumsMatch(m.id, rm.id, masterIds)
                                 );
                                 if (existingIdx !== -1) {
                                     tagMapping.mappings[existingIdx].tags = [
@@ -8829,11 +8868,11 @@ Return ONLY valid JSON:
                 // that is far earlier than the question's expected page range.
                 // If ALL tags are on page 1 but the question appears on page 6+, reject them.
                 tagMapping.mappings.forEach(m => {
-                    const qObj = questions.find(q => normalizeForComparison(q.questionNumber) === normalizeForComparison(m.id));
+                    const qObj = questions.find(q => qNumsMatch(q.questionNumber, m.id, masterIds));
                     if (!qObj || !m.tags || m.tags.length === 0) return;
 
                     // Find what page this question's [QLABEL] was found on (from deterministic pass)
-                    const detMapping = deterministicMappings.find(dm => normalizeForComparison(dm.id) === normalizeForComparison(m.id));
+                    const detMapping = deterministicMappings.find(dm => qNumsMatch(dm.id, m.id, masterIds));
                     if (detMapping && detMapping.tags.length > 0) return; // deterministic got it right — don't second-guess
 
                     // Get pages of ALL assigned tags
@@ -8861,13 +8900,13 @@ Return ONLY valid JSON:
 
   let effectiveQLabelPage = qLabelPage;
 if (effectiveQLabelPage === 0) {
-    const qIndex = questions.findIndex(q => normalizeForComparison(q.questionNumber) === normalizeForComparison(m.id));
+    const qIndex = questions.findIndex(q => qNumsMatch(q.questionNumber, m.id, masterIds));
     if (qIndex > 0) {
         // Estimate: earlier questions have lower page numbers
         // Use the page of the nearest preceding question that DID get tags
         for (let qi = qIndex - 1; qi >= 0; qi--) {
             const prevQ = questions[qi];
-            const prevMapping = tagMapping.mappings.find(pm => normalizeForComparison(pm.id) === normalizeForComparison(prevQ.questionNumber));
+            const prevMapping = tagMapping.mappings.find(pm => qNumsMatch(pm.id, prevQ.questionNumber, masterIds));
             if (prevMapping && prevMapping.tags.length > 0) {
                 const prevPages = prevMapping.tags.map(t => {
                     const pm = t.match(/\[#P:(\d+),/);
@@ -8904,7 +8943,15 @@ mappingsArr.forEach(m => {
 });
 questions.forEach(q => {
     const normKey = normalizeForComparison(q.questionNumber);
-    questionMappings.set(q._uid, mappingsByNormKey.get(normKey) || null);
+    let mapping = mappingsByNormKey.get(normKey);
+    if (!mapping) {
+        // Fallback: fold a lettered mapping id (e.g. "17A") onto this question's
+        // bare numeric parent (e.g. "17") when no exact normalized-key match
+        // exists — same guarded rule as qNumsMatch, only fires on the specific
+        // case that previously fell through to null.
+        mapping = mappingsArr.find(m => qNumsMatch(m.id, q.questionNumber, masterIds)) || null;
+    }
+    questionMappings.set(q._uid, mapping);
 });
 
 const atomicSlices = sliceByAtomicLines(fullTranscript, tagMapping);
@@ -8914,7 +8961,7 @@ const atomicSlices = sliceByAtomicLines(fullTranscript, tagMapping);
 // For these, slice the text directly between their QLABEL and the next QLABEL.
 questions.forEach(q => {
     const qKey = normalizeForComparison(q.questionNumber);
-    const existing = tagMapping.mappings.find(m => normalizeForComparison(m.id) === qKey);
+    const existing = tagMapping.mappings.find(m => qNumsMatch(m.id, q.questionNumber, masterIds));
     if (existing && existing.tags.length > 0) return; // already has tags, skip
     if (atomicSlices[qKey] && atomicSlices[qKey].length > 10) return; // already sliced
     // Find this question's QLABEL in the transcript
@@ -8922,8 +8969,7 @@ questions.forEach(q => {
     let prevQL = null, myQL = null, nextQL = null;
     let m;
     while ((m = qlRe.exec(fullTranscript)) !== null) {
-        const norm = normalizeForComparison(m[1]);
-        if (norm === qKey && !myQL) { myQL = m; continue; }
+        if (qNumsMatch(m[1], q.questionNumber, masterIds) && !myQL) { myQL = m; continue; }
         if (myQL) { nextQL = m; break; }
         if (!myQL) prevQL = m; // track last QLABEL before ours
     }
@@ -9218,7 +9264,21 @@ if (ownMapping && ownMapping._gapText) {
                     const isOR = /alternative question \(or\)/i.test(q.checkingInstructions || '') || /\.[AB]$/i.test(String(q.questionNumber));
                     const own = isOR
                         ? labelHits.filter(h => h.root === myRoot).sort((a, b) => a.pos - b.pos)[0]
-                        : labelHits.find(h => h.norm === myNorm && !h.used);
+                        : labelHits.find(h => h.norm === myNorm && !h.used)
+                          // Fallback: fold a lettered OCR label (e.g. "16A") onto this
+                          // question's bare numeric id (e.g. "16") — only when the lettered
+                          // form isn't itself a real separate master question. Mirrors the
+                          // guard already proven in matchLabelToMasterId's "sub-part folded
+                          // into parent" fallback. Non-OR path only — OR pairs are handled
+                          // entirely by the branch above and never reach this fallback.
+                          || labelHits.find(h => {
+                              if (h.used || h.root !== myRoot) return false;
+                              const hIsBare = h.norm === h.root;
+                              const myIsBare = myNorm === myRoot;
+                              if (hIsBare === myIsBare) return false;
+                              const letteredLabel = hIsBare ? myNorm : h.norm;
+                              return !masterIds.some(id => normalizeLabelForMatch(id, masterIds) === letteredLabel);
+                          });
                     if (!own) continue;
                     // Slice from just after the own label to the next label of a DIFFERENT root.
                     let sliceEnd = fullTranscript.length;
