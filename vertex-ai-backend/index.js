@@ -5955,6 +5955,134 @@ Return ONLY valid JSON:
     }
 }
 
+/**
+ * BOUNDARY VERIFICATION + REPAIR — catches confidently-WRONG assignments.
+ * Orphan rescue (above) only ever looks at UNASSIGNED content — if the
+ * librarian confidently assigns Q10's answer to Q1, Q1 has non-empty text
+ * and nothing upstream ever flags it, because nothing was left over to
+ * rescue. This runs on EVERY question with assigned text and asks one
+ * small, cheap, text-only call: does this content actually belong to this
+ * question? Only when the answer is no does the more expensive repair run —
+ * first a free re-slice (same own-label search as recoverOrphanAnswers),
+ * then, only if that fails, one targeted LLM call over the full transcript
+ * to relocate the real answer. Never touches a question the check confirms.
+ */
+async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds) {
+    const _root = s => (String(s || '').match(/(\d+)/) || [])[1] || '';
+    const labelRe = /\[QLABEL:([^\]]+)\]/g;
+    const labelHits = [];
+    let lm;
+    while ((lm = labelRe.exec(fullTranscript)) !== null) {
+        const raw = lm[1].trim();
+        labelHits.push({ pos: lm.index, end: lm.index + lm[0].length, raw, root: _root(raw), norm: normalizeLabelForMatch(raw, masterIds), used: false });
+    }
+
+    for (const q of questions) {
+        const txt = q.studentText || '';
+        if (txt.trim().length < 10) continue; // nothing assigned, nothing to check
+
+        let verdictMismatch = false;
+        try {
+            const checkModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            const checkResult = await callGeminiWithRetry(checkModel, {
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: `Question ${q.questionNumber} asks: "${(q.text || '').substring(0, 300)}"
+
+The text currently assigned as this question's student answer is:
+"""
+${txt.substring(0, 1000)}
+"""
+
+Does this text plausibly answer QUESTION ${q.questionNumber} specifically — or does it look like it is actually a DIFFERENT question's answer that got misassigned here (wrong topic, wrong numbers, unrelated working)?
+
+Respond with ONLY one word: MATCH or MISMATCH.`
+                    }]
+                }],
+                generationConfig: { candidateCount: 1, temperature: 0, topP: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
+            });
+            const verdict = (checkResult.response.candidates[0].content.parts[0].text || '').trim().toUpperCase();
+            verdictMismatch = verdict.includes('MISMATCH');
+        } catch (verifyErr) {
+            console.warn(`[BoundaryVerify] Q${q.questionNumber}: check call failed, skipping: ${verifyErr.message}`);
+            continue;
+        }
+
+        if (!verdictMismatch) continue;
+        console.log(`[BoundaryVerify] Q${q.questionNumber}: flagged as mismatch, attempting repair`);
+
+        // Free repair first: same own-label search + guarded lettered-fold as
+        // recoverOrphanAnswers, reused here rather than duplicated.
+        const myNorm = normalizeLabelForMatch(q.questionNumber, masterIds);
+        const myRoot = _root(q.questionNumber);
+        const isOR = /alternative question \(or\)/i.test(q.checkingInstructions || '') || /\.[AB]$/i.test(String(q.questionNumber));
+        const own = isOR
+            ? labelHits.filter(h => h.root === myRoot).sort((a, b) => a.pos - b.pos)[0]
+            : labelHits.find(h => h.norm === myNorm && !h.used)
+              || labelHits.find(h => {
+                  if (h.used || h.root !== myRoot) return false;
+                  const hIsBare = h.norm === h.root;
+                  const myIsBare = myNorm === myRoot;
+                  if (hIsBare === myIsBare) return false;
+                  const letteredLabel = hIsBare ? myNorm : h.norm;
+                  return !masterIds.some(id => normalizeLabelForMatch(id, masterIds) === letteredLabel);
+              });
+
+        let repaired = false;
+        if (own) {
+            let sliceEnd = fullTranscript.length;
+            for (const h of labelHits) {
+                if (h.pos > own.end && h.root && h.root !== myRoot) { sliceEnd = h.pos; break; }
+            }
+            const recovered = fullTranscript.substring(own.end, sliceEnd).trim();
+            if (recovered.length >= 10 && recovered !== txt) {
+                q.studentText = recovered;
+                q.requiresReview = true;
+                if (!isOR) own.used = true;
+                console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice from own label "${own.raw}" succeeded`);
+                repaired = true;
+            }
+        }
+
+        // Escalate to one targeted LLM call only if the free re-slice didn't help.
+        if (!repaired) {
+            try {
+                const findModel = vertex_ai.getGenerativeModel({
+                    model: 'gemini-2.5-flash',
+                    generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+                });
+                const findPrompt = `You are a document librarian. The text currently assigned to Question ${q.questionNumber} appears to be WRONG (it belongs to a different question).
+
+Question ${q.questionNumber} asks: "${(q.text || '').substring(0, 300)}"
+
+FULL TRANSCRIPT:
+${fullTranscript.substring(0, 40000)}
+
+Find the block of text in the FULL TRANSCRIPT above that is actually the student's answer to Question ${q.questionNumber}. Return ONLY valid JSON:
+{ "found": true, "text": "the exact matching block of text, copied verbatim from the transcript" }
+or, if you cannot find it:
+{ "found": false }`;
+                const findResult = await callGeminiWithRetry(findModel, {
+                    contents: [{ role: 'user', parts: [{ text: findPrompt }] }]
+                });
+                const rawFind = findResult.response.candidates[0].content.parts[0].text;
+                const parsedFind = extractJsonFromString(rawFind);
+                if (parsedFind && parsedFind.found && parsedFind.text && parsedFind.text.trim().length >= 10) {
+                    q.studentText = parsedFind.text.trim();
+                    q.requiresReview = true;
+                    console.log(`[BoundaryFix] Q${q.questionNumber}: LLM relocation succeeded`);
+                } else {
+                    q.requiresReview = true;
+                    console.log(`[BoundaryFix] Q${q.questionNumber}: could not relocate — flagging for manual review, keeping original text`);
+                }
+            } catch (fixErr) {
+                q.requiresReview = true;
+                console.warn(`[BoundaryFix] Q${q.questionNumber}: relocation call failed, flagging for manual review: ${fixErr.message}`);
+            }
+        }
+    }
+}
 
 /**
  * Detects actual PDF page count from base64 data without any library.
@@ -7086,6 +7214,10 @@ questions.forEach(q => {
 
 // OR-RESOLUTION happens inside the grader via OR-PAIR LAW (see GRADING_SYSTEM_INSTRUCTION).
             // Losing side hidden post-grading by computeOrLoserQNums() on the frontend.
+
+            // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
+            await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
+            // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
             // ─── OCR SELF-VERIFICATION PASS (SA/LA questions only) ──────────────────────
             // The grading-time image cross-check (still in place below) asks ONE call to
@@ -9560,6 +9692,10 @@ questions.forEach(q => {
 
 // OR-RESOLUTION happens inside the grader via OR-PAIR LAW (see GRADING_SYSTEM_INSTRUCTION).
             // Losing side hidden post-grading by computeOrLoserQNums() on the frontend.
+
+            // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
+            await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
+            // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
             // ─── OCR SELF-VERIFICATION PASS (SA/LA questions only) ──────────────────────
             // The grading-time image cross-check (still in place below) asks ONE call to
