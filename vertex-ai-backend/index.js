@@ -6663,10 +6663,8 @@ let nextQlPos = -1;
     qlScanRx.lastIndex = lastTagInfo.end;
     let qlm;
     while ((qlm = qlScanRx.exec(fullTranscript)) !== null) {
-const qlNorm = normalizeLabelForMatch(qlm[1], masterIds);
-        const ownerNorm = normalizeLabelForMatch(ownerQNum || '', masterIds);
-        if (qlNorm === ownerNorm) continue;
-        const isMaster = masterIds.some(id => normalizeLabelForMatch(id, masterIds) === qlNorm);
+if (qNumsMatch(qlm[1], ownerQNum || '', masterIds)) continue; // still our own label (e.g. "17A" for owner "17")
+        const isMaster = masterIds.some(id => qNumsMatch(id, qlm[1], masterIds));
         if (!isMaster) continue;
         // This QLABEL belongs to a real different master question — use it as endPos
         nextQlPos = qlm.index;
@@ -9139,10 +9137,8 @@ let nextQlPos = -1;
     qlScanRx.lastIndex = lastTagInfo.end;
     let qlm;
     while ((qlm = qlScanRx.exec(fullTranscript)) !== null) {
-const qlNorm = normalizeLabelForMatch(qlm[1], masterIds);
-        const ownerNorm = normalizeLabelForMatch(ownerQNum || '', masterIds);
-        if (qlNorm === ownerNorm) continue;
-        const isMaster = masterIds.some(id => normalizeLabelForMatch(id, masterIds) === qlNorm);
+if (qNumsMatch(qlm[1], ownerQNum || '', masterIds)) continue; // still our own label (e.g. "17A" for owner "17")
+        const isMaster = masterIds.some(id => qNumsMatch(id, qlm[1], masterIds));
         if (!isMaster) continue;
         // This QLABEL belongs to a real different master question — use it as endPos
         nextQlPos = qlm.index;
