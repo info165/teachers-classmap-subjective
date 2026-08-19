@@ -3887,8 +3887,8 @@ description: "The GRANULAR sub-concept this question tests. Rule: if your answer
 
     questionType: {
         type: "string",
-        enum: ["RECALL", "CONCEPTUAL", "NUMERICAL", "DERIVATION", "DIAGRAM", "APPLICATION", "ASSERTION_REASON", ""],
-        description: "The cognitive type of this question. RECALL=pure memory/definition. CONCEPTUAL=explain why/how. NUMERICAL=apply formula and calculate. DERIVATION=step-by-step mathematical proof. DIAGRAM=draw and label. APPLICATION=apply concept to new scenario. ASSERTION_REASON=evaluate two statements. Empty string if cannot determine."
+        enum: ["RECALL", "CONCEPTUAL", "NUMERICAL", "DERIVATION", "DIAGRAM", "APPLICATION", "ASSERTION_REASON"],
+        description: "The cognitive type of this question. RECALL=pure memory/definition. CONCEPTUAL=explain why/how. NUMERICAL=apply formula and calculate. DERIVATION=step-by-step mathematical proof. DIAGRAM=draw and label. APPLICATION=apply concept to new scenario. ASSERTION_REASON=evaluate two statements. Always pick the closest match — never leave this blank."
     },
     
     stepWiseEvaluation: {
