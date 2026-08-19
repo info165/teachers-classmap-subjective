@@ -1739,6 +1739,28 @@ When student answer contains [TABLE:...] blocks:
 
 
 ═══════════════════════════════════
+EQUATIONS — CHEMISTRY, PHYSICS, MATHS
+═══════════════════════════════════
+Equations fail two different ways. Judge each independently — one being right never excuses the other being wrong.
+
+THE FAILURE THIS SECTION EXISTS TO CLOSE:
+Do NOT award a step because the correct formula's NAME, the correct reactants, or the correct topic are mentioned, while the equation the student actually wrote out is unbalanced, structurally wrong, or the wrong form entirely. Naming the right reaction or formula is not the same as writing it correctly. Apply the same "named only vs. actually expressed" test already used for prose answers above — an equation is a claim, not a keyword.
+
+CHEMICAL EQUATIONS:
+- BALANCING IS NOT COSMETIC: count atoms of each element on both sides. An unbalanced equation is wrong even when the correct reactants and products are named — balancing the equation is very often the specific skill the question is testing.
+- FORMULA EQUIVALENCE, NOT ELEMENT-PRESENCE: a formula is a specific claim about composition and ratio, not just "these elements appear somewhere" — H2O and OH2 are NOT equivalent even though both mention H and O. Do treat pure OCR/notation variants as equivalent once the underlying formula is confirmed correct (H2O = H₂O = H_2O; a missing or flattened subscript digit from OCR is a transcription artifact, not a student error).
+- STATE SYMBOLS ((s), (l), (g), (aq)): only require these when the rubric or model answer explicitly includes them. If the model answer omits them, do not penalize a student for omitting them either. If the model answer includes them and the student's are wrong or missing, that is a genuine deduction, not a formatting nitpick.
+- ARROW TYPE IS CHEMISTRY, NOT FORMATTING: a single reaction arrow (→) and a reversible/equilibrium arrow (⇌) mean different things — do not treat them as interchangeable unless the rubric itself doesn't distinguish them for this question.
+- IONIC VS. MOLECULAR: if the question or rubric specifically asks for an ionic equation, a fully correct molecular equation is not equivalent and must not receive full marks for that step — grade against the specific form actually asked for.
+
+PHYSICS / MATHS FORMULAS AND DERIVATIONS:
+- ALGEBRAIC EQUIVALENCE, NOT TEXTUAL MATCH: a formula rearranged into a different but algebraically equivalent form (e.g. v = u + at rearranged to t = (v−u)/a) is the SAME correct relationship, not a wrong or different one. Verify equivalence by checking the underlying relationship/substitution logic, not by comparing symbol arrangement to the model answer's specific layout.
+- VARIABLE NAMING IS NOT THE RELATIONSHIP: a student who consistently uses a different (but clearly self-consistent, or conventionally standard) letter for the same physical quantity has not made an error — judge the relationship being expressed, not the specific letter chosen, unless the question itself defines the variable and the student's usage contradicts that definition.
+- UNITS ARE PART OF A NUMERICAL PHYSICS RESULT: when the rubric or model answer requires units, a correct number with a wrong or missing required unit is an incomplete final answer for that step — this follows the RESULT-STEP LAW already defined above (correct value only counts when it genuinely matches, units included where required).
+- SIGN AND DIMENSIONAL ERRORS ARE REAL ERRORS, NOT MINOR ONES: a sign error or dimensional mismatch changes what the answer physically means (e.g. treating a negative displacement as positive, or a deceleration as an acceleration) — grade it as a genuine error against the specific step it affects under the DEPTH & COMPLETENESS LAW above, not as a trivial deduction to wave through under general leniency.
+
+
+═══════════════════════════════════
 PROSE / LAW / UPSC / ESSAY
 ═══════════════════════════════════
 Identify key points required (from rubric, or derive from model answer).
