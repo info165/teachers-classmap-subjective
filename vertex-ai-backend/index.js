@@ -3747,6 +3747,85 @@ generationConfig: {
     return pageResults;
 }
 // ─────────────────────────────────────────────────────────────────────────────
+// RUBRIC-STEP VALIDATION (server-side safety net, additive to the grader)
+// The prompt tells the model "Create exactly one stepWiseEvaluation entry per
+// rubric step — a MECHANICAL count" and gives each step its own mark ceiling
+// in rubric.step_marking (e.g. "Step 1: ... (1); Step 2: ... (1)"). Nothing
+// in code has ever checked that the model actually did either of those things
+// — real teacher reports show it sometimes doesn't (wrong step count, or a
+// single step awarded more than its own declared ceiling even though the
+// question's TOTAL still happens to clamp correctly).
+//
+// This only ever pulls marks DOWN, by exactly the amount a step exceeded its
+// own rubric ceiling — never up, never a full recompute, never a guess at
+// which entries to merge/split when the count itself is wrong (that's a
+// judgment call this function deliberately does not make; it flags for
+// review instead). And it only acts when the rubric text parses with real
+// confidence — if the parsed per-step ceilings don't sum back to the
+// question's own total, that's a sign the parse itself is unreliable for
+// this rubric's phrasing, and the safest thing is to touch nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseRubricSteps(stepMarkingText) {
+    if (!stepMarkingText || typeof stepMarkingText !== 'string') return null;
+    const stepRegex = /Step\s+(\d+)\s*:/g;
+    const matches = [...stepMarkingText.matchAll(stepRegex)];
+    if (matches.length === 0) return null; // no mechanical "Step N:" structure — nothing to validate
+    const steps = [];
+    for (let i = 0; i < matches.length; i++) {
+        const start = matches[i].index;
+        const end = i + 1 < matches.length ? matches[i + 1].index : stepMarkingText.length;
+        const segment = stepMarkingText.slice(start, end);
+        // The step's own declared mark is the LAST purely-numeric parenthetical in its
+        // segment — mid-sentence parens like "34(2) = 68" or "4(9-5)" don't match this
+        // (they contain an operator/variable, or aren't the trailing one), so they're
+        // naturally skipped rather than mistaken for the mark ceiling.
+        const markMatches = [...segment.matchAll(/\(([\d.]+)\)/g)];
+        const maxForStep = markMatches.length > 0 ? parseFloat(markMatches[markMatches.length - 1][1]) : null;
+        steps.push({ stepNum: parseInt(matches[i][1], 10), maxMarks: maxForStep });
+    }
+    return steps;
+}
+
+function validateAndClampStepMarks(aiMatch, reqQ) {
+    const rubricText = reqQ.rubric && reqQ.rubric.step_marking;
+    const parsedSteps = parseRubricSteps(rubricText);
+    if (!parsedSteps || parsedSteps.length === 0) return;
+
+    const stepEntries = aiMatch.stepWiseEvaluation;
+    if (!Array.isArray(stepEntries) || stepEntries.length === 0) return;
+
+    // Step-count mismatch: flag for a teacher to glance at rather than guess a fix —
+    // deciding which entries to merge/split is a judgment call, not a mechanical one.
+    if (stepEntries.length !== parsedSteps.length) {
+        aiMatch.requiresReview = true;
+        console.warn(`[RubricValidate] Q${reqQ.questionNumber}: rubric declares ${parsedSteps.length} step(s), grader produced ${stepEntries.length} — flagged for review.`);
+        return;
+    }
+
+    // Only trust per-step ceilings when they're internally consistent with the
+    // question's own total — otherwise this specific rubric's phrasing likely
+    // broke the parse, and guessing from a bad parse is worse than doing nothing.
+    const allStepsHaveMax = parsedSteps.every(s => s.maxMarks !== null && !isNaN(s.maxMarks));
+    const parsedSum = parsedSteps.reduce((a, s) => a + (s.maxMarks || 0), 0);
+    if (!allStepsHaveMax || Math.abs(parsedSum - reqQ.marks) > 0.01) return;
+
+    let totalDelta = 0;
+    stepEntries.forEach((step, i) => {
+        const ceiling = parsedSteps[i].maxMarks;
+        if (typeof step.marks === 'number' && step.marks > ceiling + 0.001) {
+            console.warn(`[RubricValidate] Q${reqQ.questionNumber} step ${i + 1}: awarded ${step.marks} but rubric ceiling is ${ceiling} — clamped.`);
+            totalDelta += step.marks - ceiling;
+            step.marks = ceiling;
+        }
+    });
+    if (totalDelta > 0) {
+        aiMatch.marksAwarded = Math.max(0, (parseFloat(aiMatch.marksAwarded) || 0) - totalDelta);
+        aiMatch.requiresReview = true;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GRADING PIPELINE — gradeQuestionBatch
 // UNCHANGED from original.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4080,6 +4159,7 @@ const parsedResult = [...complexResults, ...arResults, ...saResults, ...simpleRe
         }
 
         if (aiMatch) {
+            validateAndClampStepMarks(aiMatch, reqQ);
             const marksAwarded = Math.min(parseFloat(aiMatch.marksAwarded) || 0, reqQ.marks);
             return { ...reqQ, ...aiMatch, questionNumber: reqQ.questionNumber, marksAwarded, maxMarksForQuestion: reqQ.marks };
         }
