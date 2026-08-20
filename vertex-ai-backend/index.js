@@ -3810,8 +3810,14 @@ function parseRubricSteps(stepMarkingText) {
 }
 
 function validateAndClampStepMarks(aiMatch, reqQ) {
+    // Prefer the clean structured source when it exists (currently: Excel-uploaded
+    // questions) — skips text re-parsing entirely, so there's no pattern-matching
+    // risk at all for these, only for questions still relying on step_marking text.
+    const structuredSteps = reqQ.rubric && Array.isArray(reqQ.rubric.markingSteps) && reqQ.rubric.markingSteps.length > 0
+        ? reqQ.rubric.markingSteps.map(s => ({ stepNum: s.stepNumber, maxMarks: s.marks }))
+        : null;
     const rubricText = reqQ.rubric && reqQ.rubric.step_marking;
-    const parsedSteps = parseRubricSteps(rubricText);
+    const parsedSteps = structuredSteps || parseRubricSteps(rubricText);
     if (!parsedSteps || parsedSteps.length === 0) return;
 
     const stepEntries = aiMatch.stepWiseEvaluation;
@@ -3993,8 +3999,19 @@ console.log(`[Grading] 4-tier: ${complexQuestions.length} complex, ${arQuestions
     // Build AI batch — demote model answer to reference for rubric questions
     function buildAIBatch(batch) {
         return batch.map(q => {
-            const hasRubric = q.rubric && q.rubric.step_marking &&
-                              q.rubric.step_marking !== "Grade based on model answer.";
+            // When a clean, structured rubric exists (currently: Excel-uploaded questions
+            // where every step's mark was a real number in its own column), re-render
+            // step_marking FROM that structure instead of trusting whatever string is
+            // already stored — guarantees the text the model reads and the numbers
+            // validateAndClampStepMarks checks can never drift apart, without needing
+            // any new instruction telling the model which field to prefer.
+            const effectiveRubric = (q.rubric && Array.isArray(q.rubric.markingSteps) && q.rubric.markingSteps.length > 0)
+                ? { ...q.rubric, step_marking: q.rubric.markingSteps
+                      .map(s => `Step ${s.stepNumber}: ${s.description} (${s.marks})`)
+                      .join('; ') }
+                : q.rubric;
+            const hasRubric = effectiveRubric && effectiveRubric.step_marking &&
+                              effectiveRubric.step_marking !== "Grade based on model answer.";
             return {
                 questionNumber:       q._uid,
                 text:                 q.text,
@@ -4003,7 +4020,7 @@ console.log(`[Grading] 4-tier: ${complexQuestions.length} complex, ${arQuestions
                     : q.answer,
                 marks:                q.marks,
                 type:                 q.type,
-                rubric:               q.rubric || null,
+                rubric:               effectiveRubric || null,
 checkingInstructions: q.checkingInstructions || "",
                 imagePrompt:          q.imagePrompt || null,
                 options:              q.options || null,
