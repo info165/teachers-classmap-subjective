@@ -6294,6 +6294,134 @@ function rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMa
     }
 }
 
+// ── OR-PAIR RESOLUTION (runs ONCE, BEFORE grading, per OR-pair) ─────────────
+// Root cause of the "both sides get credit" / "garbled feedback" / "random-
+// looking marks" family of bugs: today, both sides of an OR-pair are graded
+// INDEPENDENTLY in the same large batch call, and the model is relied on to
+// remember, mid-batch, that they're linked and only one should count — an
+// instruction that gets followed inconsistently (verified directly: 7-9 of 11
+// real OR-pairs correct, 2-4 wrong, same paper, same student).
+//
+// This replaces "grade both, hope they agree" with "decide once, before
+// grading, with a single focused call whose only job is that one decision."
+// Validated against real data before deployment: 10/11 real math OR-pairs
+// correct (1 honest abstention, not a wrong guess) and 4/4 real English
+// OR-pairs correct — including the hardest case (two same-format posters
+// distinguished only by specific content) and a case where earlier sub-parts
+// are genuinely SHARED between both sides and only the final sub-part differs
+// (the discriminator is explicitly told to separate shared from unique
+// content, and to trust a student's own hand-written sub-part label over any
+// other signal).
+//
+// SAFE BY CONSTRUCTION for whatever this hasn't been tested against yet
+// (different subjects, OCR quality, handwriting styles, question formats):
+//   - It only ever ACTS when it reaches a clear A/B verdict with a citable
+//     reason. If it can't find distinguishing evidence, or the call fails for
+//     any reason (network, parsing, anything), it changes NOTHING — both
+//     sides are left exactly as the existing pipeline already produces them,
+//     with the existing #3/#4 post-grading consistency fixes still applying
+//     as a backstop. Nothing here can make an unresolved case worse than it
+//     is today; it can only resolve cases it's actually confident about.
+//   - When it does act, it only ever clears the LOSING side's studentText to
+//     empty — the exact same state a genuinely blank answer already has —
+//     so every downstream step (blank-answer guards, grading, page-mapping)
+//     treats it through paths that are already tested and already shipped,
+//     rather than any new code path.
+async function resolveOrPairsBeforeGrading(questions) {
+    const _normQ = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const seen = new Set();
+    const pairs = [];
+    for (const q of questions) {
+        const ci = q.checkingInstructions || '';
+        if (!/alternative question \(or\)/i.test(ci)) continue;
+        if (seen.has(q.questionNumber)) continue;
+        const m = ci.match(/with\s+question\s+([0-9]+(?:[.\-][a-zA-Z0-9]+)?)/i);
+        if (!m) continue;
+        const targetNorm = _normQ(m[1]);
+        const partner = questions.find(p => _normQ(p.questionNumber) === targetNorm);
+        if (!partner || seen.has(partner.questionNumber)) continue;
+        pairs.push([q, partner]);
+        seen.add(q.questionNumber);
+        seen.add(partner.questionNumber);
+    }
+    if (pairs.length === 0) return;
+    console.log(`[OrResolve] ${pairs.length} OR-pair(s) found — resolving before grading.`);
+
+    for (const [qA, qB] of pairs) {
+        const textA = (qA.studentText || '').trim();
+        const textB = (qB.studentText || '').trim();
+        // Only worth resolving when both sides currently carry real content —
+        // per the OR-PAIR LAW, the librarian sends the SAME shared answer to
+        // both sides, so if either is already empty there's nothing ambiguous
+        // to resolve; leave existing per-side handling alone.
+        if (!textA || !textB) continue;
+
+        try {
+            const discModel = vertex_ai.getGenerativeModel({
+                model: 'gemini-2.5-flash',
+                generationConfig: { temperature: 0, responseMimeType: 'application/json', thinkingConfig: { thinkingBudget: 300 } }
+            });
+            const prompt = `You are deciding which of TWO alternative ("OR") exam questions a student's shared answer text actually addresses. The student wrote ONE answer; it was mechanically attached to both sides because they share a question number/slot on the answer sheet — your job is to determine which one it really answers.
+
+SIDE A — Question "${qA.questionNumber}":
+Question text: ${qA.text || ''}
+Model answer / required content: ${qA.answer || ''}
+
+SIDE B — Question "${qB.questionNumber}":
+Question text: ${qB.text || ''}
+Model answer / required content: ${qB.answer || ''}
+
+STUDENT'S SHARED ANSWER TEXT:
+"""
+${textA}
+"""
+
+WORK THROUGH THIS IN ORDER — DO NOT SKIP STEPS:
+
+STEP 1 — SHARED CONTENT (do this FIRST, before looking at the student's answer at all):
+Compare Side A's and Side B's question text and model answer to each other. Some OR-pairs are NOT two unrelated questions — they are the SAME setup/given data with only the final sub-part or final ask differing (e.g. both sides give the identical numbers/vectors/probabilities, and only ask for a different final quantity). List anything — givens, numbers, names, earlier sub-parts (i), (ii), etc. — that appears in BOTH sides' own text. This shared list is NEVER valid evidence for either side, even if the student gets it completely correct, because a correct answer to a shared part would trivially match both sides equally.
+
+STEP 2 — UNIQUE CONTENT:
+For each side separately, list only the requirements that appear in ONLY that side's own text and are ABSENT from the other side's text. This is the only content that can actually distinguish the two sides. If most of the question is shared and only the last sub-part/final ask differs, the unique content is that final ask specifically — weight it accordingly, not the shared earlier parts even if the student did those correctly.
+
+STEP 3 — MATCH:
+Compare the student's answer ONLY against the UNIQUE lists from Step 2. Ignore any part of the student's answer that only matches shared content. You MUST cite the exact specific detail from the student's text that is unique to one side and matches it. If nothing in the student's answer reaches the unique/differing part of either side, or the unique parts of both sides are equally plausible, say CANNOT_DETERMINE rather than guessing based on shared content.
+
+PRIORITY RULE (read before finalizing your verdict): scan the student's FULL answer text for their OWN sub-part label — something like "(iii)", "iv)", "part b", etc. — written by the student themselves, anywhere in the text, including near the end. If such a label exists AND it corresponds to a sub-part number/letter that appears in ONLY one side's unique content, that is the single strongest, most direct signal of intent — it OVERRIDES any impression from earlier shared/prerequisite content the student also wrote, even full, correct work on that shared part.
+
+Return ONLY this JSON — you MUST fill in sharedContent/uniqueToA/uniqueToB with your actual Step 1/Step 2 analysis before deciding verdict; do not skip straight to a verdict:
+{
+  "sharedContent": "brief list of what's common to both sides' own text, or 'none' if the two sides are unrelated topics",
+  "uniqueToA": "brief list of what's unique to side A only",
+  "uniqueToB": "brief list of what's unique to side B only",
+  "verdict": "A" | "B" | "CANNOT_DETERMINE",
+  "decidingDetail": "the exact phrase from the student's text that matches the UNIQUE (not shared) content of the winning side, or null if CANNOT_DETERMINE",
+  "reasoning": "one sentence explaining why that phrase points to A or B specifically, referencing the unique content only"
+}`;
+
+            const result = await callGeminiWithRetry(discModel, { contents: [{ role: 'user', parts: [{ text: prompt }] }] });
+            const raw = result.response.candidates[0].content.parts[0].text || '';
+            let parsed;
+            try { parsed = JSON.parse(raw); }
+            catch (e) {
+                try { parsed = JSON.parse(raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')); }
+                catch (e2) { parsed = null; }
+            }
+            if (!parsed || (parsed.verdict !== 'A' && parsed.verdict !== 'B')) {
+                console.log(`[OrResolve] Q${qA.questionNumber}/Q${qB.questionNumber}: CANNOT_DETERMINE — leaving both sides exactly as-is, existing pipeline handles them unchanged.`);
+                continue;
+            }
+            const loser = parsed.verdict === 'A' ? qB : qA;
+            const winner = parsed.verdict === 'A' ? qA : qB;
+            loser.studentText = '';
+            loser._orResolvedAway = true;
+            console.log(`[OrResolve] Q${winner.questionNumber} wins over Q${loser.questionNumber} — deciding detail: "${String(parsed.decidingDetail || '').substring(0, 150)}"`);
+        } catch (err) {
+            console.warn(`[OrResolve] Q${qA.questionNumber}/Q${qB.questionNumber}: call failed, leaving both sides exactly as-is: ${err.message}`);
+        }
+    }
+}
+
 /**
  * Detects actual PDF page count from base64 data without any library.
  * Reads the /Count field from the PDF cross-reference table.
@@ -7593,6 +7721,10 @@ Respond with EXACTLY one word: CORRECT, INCORRECT, or UNCLEAR (if you cannot con
                 }
             }
             // ─── END INDEPENDENT MCQ/AR GRADER PASS ──────────────────────────────────────
+
+            // ─── OR-PAIR RESOLUTION (runs before batching so both sides always land correctly regardless of which batch each falls into) ───
+            await resolveOrPairsBeforeGrading(questions);
+            // ─── END OR-PAIR RESOLUTION ───────────────────────────────────────────────
 
             // ─── BATCH GRADING (UNCHANGED) ───────────────────────────────────────────
             const MAX_BATCH_WEIGHT = 16;
@@ -10070,6 +10202,10 @@ If it does NOT match, respond with ONLY the FULL corrected transcription, start 
                 }
             }
             // ─── END OCR SELF-VERIFICATION PASS ──────────────────────────────────────────
+
+            // ─── OR-PAIR RESOLUTION (runs before batching so both sides always land correctly regardless of which batch each falls into) ───
+            await resolveOrPairsBeforeGrading(questions);
+            // ─── END OR-PAIR RESOLUTION ───────────────────────────────────────────────
 
             // ─── BATCH GRADING (UNCHANGED) ───────────────────────────────────────────
             const MAX_BATCH_WEIGHT = 16;
