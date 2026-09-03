@@ -4026,7 +4026,19 @@ checkingInstructions: q.checkingInstructions || "",
                 options:              q.options || null,
                 ragContext:           q.ragContext || "",
                 topicAnchors:         Array.isArray(q.topicAnchors) ? q.topicAnchors : [],
-                orPartner:            getOrPartnerContext(q)
+                orPartner:            (() => {
+                    const orp = getOrPartnerContext(q);
+                    // Stash the VERIFIED partner number on the original question object
+                    // (not the batch payload) so report reconstruction can correct the
+                    // model's own "Student attempted the alternative (Q...)" text later —
+                    // observed directly: the model sometimes echoes back its OWN internal
+                    // uid field instead of the partner's real number ("Quid_34_..." instead
+                    // of "34-OR"). This never changes what the model is shown or asked to
+                    // do — it only gives later code a trusted value to fix that one sentence
+                    // with, if the model garbles it.
+                    q._orPartnerQNum = orp ? orp.questionNumber : null;
+                    return orp;
+                })()
             };
         });
     }
@@ -6203,6 +6215,85 @@ or, if you cannot find it:
     }
 }
 
+// ── BLANK MCQ/AR/TF RESCUE (deterministic, code-only, zero LLM cost) ────────
+// verifyAndRepairBoundaries (above) only checks/repairs questions that already
+// have >=10 characters of assigned text — it has no path for a question that
+// ended up with ZERO characters (the librarian's deterministic pass, the
+// gap-span guard, and the AI rescue pass all failed to resolve a boundary for
+// it). Observed directly on a real paper: a run of many short, back-to-back
+// MCQ/Assertion-Reason answers in one section, each OCR'd with a doubled
+// [QLABEL:...] tag on its own line ("Ans 1 [QLABEL:Ans 1] d- [QLABEL:Ans 1 d]
+// 21 years"), made the upstream boundary splitter collapse the whole run into
+// one shared, ambiguous gap. Every question in that run ended up with
+// q.studentText === '' and was graded "Not attempted" even though the answer
+// was clearly present, correctly OCR'd, and unambiguously labeled.
+//
+// This only ever fires on a question that CURRENTLY HAS NOTHING assigned, and
+// only ever ADDS a recovered slice by anchoring directly on that question's
+// own [QLABEL:...] occurrence in the raw transcript — it never overrides or
+// shortens an existing assignment, so it cannot regress any paper where the
+// librarian already resolved boundaries correctly (the vast majority of
+// cases). If it can't find its own label, or can't find a coordinate tag
+// after it before the next question's label, it leaves the question exactly
+// as it was — the existing blank-answer guard still safely forces 0 marks.
+function rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap) {
+    const MCQ_FORMAT_TYPES = new Set(['MCQ', 'AR', 'Assertion-Reason', 'True/False']);
+    const _root = s => (String(s || '').match(/(\d+)/) || [])[1] || '';
+
+    const labelRe = /\[QLABEL:([^\]]+)\]/g;
+    const labelHits = [];
+    let lm;
+    while ((lm = labelRe.exec(fullTranscript)) !== null) {
+        const raw = lm[1].trim();
+        labelHits.push({ pos: lm.index, end: lm.index + lm[0].length, raw, root: _root(raw) });
+    }
+    labelHits.sort((a, b) => a.pos - b.pos);
+
+    const tagRe = /\[#P:\d+,\d+,\d+\]/g;
+    const tagHits = [];
+    let tm;
+    while ((tm = tagRe.exec(fullTranscript)) !== null) {
+        tagHits.push({ pos: tm.index, end: tm.index + tm[0].length });
+    }
+
+    for (const q of questions) {
+        if (!MCQ_FORMAT_TYPES.has(q.type)) continue;
+        if ((q.studentText || '').trim().length > 0) continue; // only rescue genuinely-empty slots
+
+        const myRoot = _root(q.questionNumber);
+        if (!myRoot) continue;
+
+        const own = labelHits.find(h => h.root === myRoot);
+        if (!own) continue;
+
+        // Next label belonging to a DIFFERENT question is the hard ceiling for this slice.
+        const nextOther = labelHits.find(h => h.pos > own.pos && h.root !== myRoot);
+        const ceiling = nextOther ? nextOther.pos : fullTranscript.length;
+
+        // The first coordinate tag after this label, within the ceiling, terminates
+        // this single answer line — MCQ/AR/TF answers are always exactly one line,
+        // one tag, in this OCR format.
+        const ownTag = tagHits.find(t => t.pos > own.end && t.pos < ceiling);
+        if (!ownTag) continue;
+
+        const recovered = fullTranscript.substring(own.end, ownTag.end).trim();
+        if (recovered.length === 0) continue;
+
+        q.studentText = recovered;
+        q.requiresReview = true;
+        console.log(`[MCQBlankRescue] Q${q.questionNumber}: recovered own-line answer from label "${own.raw}" (was completely unassigned)`);
+
+        // pageMap was already built (from the ORIGINAL, empty slice) earlier in the
+        // pipeline — without this, the report would show correct marks but still send
+        // the teacher's "jump to page" click to the wrong (fallback last) page, since
+        // that navigation reads from pageMap, not from studentText, at report time.
+        if (pageMap && pageMap.has(q._uid)) {
+            const recoveredTagMatches = [...recovered.matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
+            recoveredTagMatches.forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
+        }
+    }
+}
+
 /**
  * Detects actual PDF page count from base64 data without any library.
  * Reads the /Count field from the PDF cross-reference table.
@@ -7338,6 +7429,10 @@ questions.forEach(q => {
             await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
+            // ── BLANK MCQ/AR/TF RESCUE (runs only on questions with ZERO assigned text) ──
+            rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap);
+            // ── END BLANK MCQ/AR/TF RESCUE ───────────────────────────────────────────
+
             // ─── OCR SELF-VERIFICATION PASS (SA/LA questions only) ──────────────────────
             // The grading-time image cross-check (still in place below) asks ONE call to
             // both re-verify a transcript against the image AND apply grading logic — in
@@ -7868,6 +7963,57 @@ questionWiseReport = questionWiseReport.map(qr => {
 
                 // OCR uncertainty flag — set by text extraction above
                 const question = questions.find(q => String(q.questionNumber) === String(qr.questionNumber));
+
+                // ── OR-PAIR TEXT-INTEGRITY FIX (deterministic, code-only) ────────────
+                // The model writes "Student attempted the alternative (Q<partner>) — not
+                // this side." itself, and was observed echoing its OWN internal batch
+                // identifier instead of the partner's real number ("Quid_34_1788416413337"
+                // instead of "34-OR"). Our own code already computes the correct partner
+                // number when building the request (stashed on question._orPartnerQNum) —
+                // overwrite whatever the model wrote in that one sentence with the verified
+                // value. This can only ever replace a wrong/garbled reference with a
+                // correct one; it never touches any other text.
+                const _orSentenceRe = /(attempted the alternative\s*\()([^()]*)(\)\s*[-–—]\s*not this side\.?)/i;
+                const fixOrSentence = (text) => {
+                    if (!text || !question || !question._orPartnerQNum) return text;
+                    if (!_orSentenceRe.test(text)) return text;
+                    // The prompt template hardcodes a literal "Q" before the number
+                    // ("...alternative (Q<orPartner.questionNumber>)...") — confirmed by
+                    // every correctly-working real example ("Q31", "Q32", "Q34-OR").
+                    // Re-add it here too, unless the stored value already starts with one.
+                    const qLabel = /^q/i.test(question._orPartnerQNum) ? question._orPartnerQNum : `Q${question._orPartnerQNum}`;
+                    return text.replace(_orSentenceRe, `$1${qLabel}$3`);
+                };
+                if (qr.finalFeedback) qr.finalFeedback = fixOrSentence(qr.finalFeedback);
+                if (Array.isArray(qr.stepWiseEvaluation)) {
+                    qr.stepWiseEvaluation = qr.stepWiseEvaluation.map(step => ({
+                        ...step,
+                        comment: fixOrSentence(step.comment)
+                    }));
+                }
+
+                // ── STEP-SUM / MARKS-AWARDED CONSISTENCY FIX (deterministic, code-only) ──
+                // Never raises marksAwarded — only ever clamps the DISPLAYED per-step
+                // marks down so they can't sum to more than what's actually awarded.
+                // Observed directly: a question's stepWiseEvaluation summed to MORE than
+                // its own marksAwarded (steps summing to 1-2 while marksAwarded showed 0),
+                // which is confusing/self-contradictory for a teacher reading the report.
+                // marksAwarded itself is left untouched — only the step breakdown is made
+                // consistent with it, and always by removing displayed credit, never adding.
+                if (Array.isArray(qr.stepWiseEvaluation) && qr.stepWiseEvaluation.length > 0) {
+                    const stepSum = qr.stepWiseEvaluation.reduce((s, st) => s + (Number(st.marks) || 0), 0);
+                    const trueAwarded = Number(qr.marksAwarded) || 0;
+                    if (stepSum > trueAwarded + 0.001) {
+                        let remaining = trueAwarded;
+                        qr.stepWiseEvaluation = qr.stepWiseEvaluation.map(step => {
+                            const stepMarks = Number(step.marks) || 0;
+                            const keep = Math.max(0, Math.min(stepMarks, remaining));
+                            remaining -= keep;
+                            return { ...step, marks: keep };
+                        });
+                    }
+                }
+
                 if (question && question._ocrUncertain && !qr.requiresReview) {
                     const cleanedFbEarly = sanitizeFeedbackDeductions(qr.finalFeedback, strictness);
                     return { ...qr, marksAwarded: awarded, requiresReview: true,
@@ -9816,6 +9962,10 @@ questions.forEach(q => {
             await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
+            // ── BLANK MCQ/AR/TF RESCUE (runs only on questions with ZERO assigned text) ──
+            rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap);
+            // ── END BLANK MCQ/AR/TF RESCUE ───────────────────────────────────────────
+
             // ─── OCR SELF-VERIFICATION PASS (SA/LA questions only) ──────────────────────
             // The grading-time image cross-check (still in place below) asks ONE call to
             // both re-verify a transcript against the image AND apply grading logic — in
@@ -10290,6 +10440,57 @@ questionWiseReport = questionWiseReport.map(qr => {
 
                 // OCR uncertainty flag — set by text extraction above
                 const question = questions.find(q => String(q.questionNumber) === String(qr.questionNumber));
+
+                // ── OR-PAIR TEXT-INTEGRITY FIX (deterministic, code-only) ────────────
+                // The model writes "Student attempted the alternative (Q<partner>) — not
+                // this side." itself, and was observed echoing its OWN internal batch
+                // identifier instead of the partner's real number ("Quid_34_1788416413337"
+                // instead of "34-OR"). Our own code already computes the correct partner
+                // number when building the request (stashed on question._orPartnerQNum) —
+                // overwrite whatever the model wrote in that one sentence with the verified
+                // value. This can only ever replace a wrong/garbled reference with a
+                // correct one; it never touches any other text.
+                const _orSentenceRe = /(attempted the alternative\s*\()([^()]*)(\)\s*[-–—]\s*not this side\.?)/i;
+                const fixOrSentence = (text) => {
+                    if (!text || !question || !question._orPartnerQNum) return text;
+                    if (!_orSentenceRe.test(text)) return text;
+                    // The prompt template hardcodes a literal "Q" before the number
+                    // ("...alternative (Q<orPartner.questionNumber>)...") — confirmed by
+                    // every correctly-working real example ("Q31", "Q32", "Q34-OR").
+                    // Re-add it here too, unless the stored value already starts with one.
+                    const qLabel = /^q/i.test(question._orPartnerQNum) ? question._orPartnerQNum : `Q${question._orPartnerQNum}`;
+                    return text.replace(_orSentenceRe, `$1${qLabel}$3`);
+                };
+                if (qr.finalFeedback) qr.finalFeedback = fixOrSentence(qr.finalFeedback);
+                if (Array.isArray(qr.stepWiseEvaluation)) {
+                    qr.stepWiseEvaluation = qr.stepWiseEvaluation.map(step => ({
+                        ...step,
+                        comment: fixOrSentence(step.comment)
+                    }));
+                }
+
+                // ── STEP-SUM / MARKS-AWARDED CONSISTENCY FIX (deterministic, code-only) ──
+                // Never raises marksAwarded — only ever clamps the DISPLAYED per-step
+                // marks down so they can't sum to more than what's actually awarded.
+                // Observed directly: a question's stepWiseEvaluation summed to MORE than
+                // its own marksAwarded (steps summing to 1-2 while marksAwarded showed 0),
+                // which is confusing/self-contradictory for a teacher reading the report.
+                // marksAwarded itself is left untouched — only the step breakdown is made
+                // consistent with it, and always by removing displayed credit, never adding.
+                if (Array.isArray(qr.stepWiseEvaluation) && qr.stepWiseEvaluation.length > 0) {
+                    const stepSum = qr.stepWiseEvaluation.reduce((s, st) => s + (Number(st.marks) || 0), 0);
+                    const trueAwarded = Number(qr.marksAwarded) || 0;
+                    if (stepSum > trueAwarded + 0.001) {
+                        let remaining = trueAwarded;
+                        qr.stepWiseEvaluation = qr.stepWiseEvaluation.map(step => {
+                            const stepMarks = Number(step.marks) || 0;
+                            const keep = Math.max(0, Math.min(stepMarks, remaining));
+                            remaining -= keep;
+                            return { ...step, marks: keep };
+                        });
+                    }
+                }
+
                 if (question && question._ocrUncertain && !qr.requiresReview) {
                     const cleanedFbEarly = sanitizeFeedbackDeductions(qr.finalFeedback, strictness);
                     return { ...qr, marksAwarded: awarded, requiresReview: true,
