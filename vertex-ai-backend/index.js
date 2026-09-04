@@ -6431,6 +6431,98 @@ Return ONLY this JSON — you MUST fill in sharedContent/uniqueToA/uniqueToB wit
     }
 }
 
+// ── LAST-RESORT AI MCQ RESCUE (runs AFTER rescueBlankMcqFromOwnLabel) ───────
+// The deterministic rescue above only works when the OCR step already
+// produced a [QLABEL:N] tag for a question — it has no way to help a
+// question whose label was never tagged at all (illegible numbering, an
+// unusual format the tagging step doesn't recognize, etc.). That is a
+// genuinely different failure mode from anything fixed so far today, and no
+// regex-based fix can close it — there is nothing to anchor on.
+//
+// This is the direct answer to "can we send it to the grader as a fallback":
+// one focused, low-temperature call per paper, given ONLY the questions that
+// are still blank after every deterministic attempt, plus the full raw
+// transcript, asked to find each one's answer by content/context and quote
+// the EXACT text it found. It must abstain (return null) rather than guess.
+//
+// Extra safety beyond the OR-pair resolver's design: whatever the model
+// claims to have found is verified to actually appear in the real transcript
+// before being trusted at all — this cannot silently hallucinate an answer
+// into existence, only ever recover text that is genuinely there. Every
+// question this touches is flagged requiresReview, since — unlike the
+// deterministic rescue above — this is a judgment call, not a mechanical
+// certainty, and a teacher should have the chance to double-check it.
+async function aiRescueBlankMcq(questions, fullTranscript) {
+    const MCQ_FORMAT_TYPES = new Set(['MCQ', 'AR', 'Assertion-Reason', 'True/False']);
+    const stillBlank = questions.filter(q =>
+        MCQ_FORMAT_TYPES.has(q.type) && (!q.studentText || !q.studentText.trim())
+    );
+    if (stillBlank.length === 0) return;
+    if (!fullTranscript || fullTranscript.trim().length < 20) return;
+
+    console.log(`[AiMcqRescue] ${stillBlank.length} MCQ/AR/TF question(s) still blank after deterministic rescue — trying last-resort AI pass.`);
+
+    try {
+        const rescueModel = vertex_ai.getGenerativeModel({
+            model: 'gemini-2.5-flash',
+            generationConfig: { temperature: 0, responseMimeType: 'application/json', thinkingConfig: { thinkingBudget: 500 } }
+        });
+
+        const questionList = stillBlank.map(q => ({
+            questionNumber: q.questionNumber,
+            questionText: (q.text || '').substring(0, 200),
+            modelAnswer: (q.answer || '').substring(0, 150)
+        }));
+
+        const prompt = `You are recovering student answers that a first-pass system failed to locate for these specific questions — every other approach has already failed for exactly these questions, so look carefully.
+
+QUESTIONS STILL MISSING AN ANSWER:
+${JSON.stringify(questionList, null, 2)}
+
+FULL RAW TRANSCRIPT:
+${fullTranscript.substring(0, 40000)}
+
+TASK:
+For EACH question listed above, search the full transcript for the student's actual written answer to it — the label may be illegible, missing, misnumbered, or the answer may be embedded in a run of other answers with no clear boundary. Use the question text and model answer to recognize the right content by what it SAYS, not just by a label.
+
+You MUST quote the answer EXACTLY as it appears in the transcript, copied verbatim (same spelling, spacing, symbols) — do not paraphrase, clean up, or summarize it. If you cannot find a specific match for a question with real confidence, return null for it rather than guessing — a wrong guess is worse than leaving it unresolved.
+
+Return ONLY this JSON:
+{ "results": [ { "questionNumber": "exactly as listed above", "foundText": "exact verbatim quote from the transcript, or null if not found" } ] }`;
+
+        const result = await callGeminiWithRetry(rescueModel, { contents: [{ role: 'user', parts: [{ text: prompt }] }] });
+        const raw = result.response.candidates[0].content.parts[0].text || '';
+        let parsed;
+        try { parsed = JSON.parse(raw); }
+        catch (e) {
+            try { parsed = JSON.parse(raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')); }
+            catch (e2) { parsed = null; }
+        }
+        if (!parsed || !Array.isArray(parsed.results)) {
+            console.warn('[AiMcqRescue] No usable results returned — leaving remaining blank questions exactly as-is.');
+            return;
+        }
+
+        for (const r of parsed.results) {
+            if (!r || !r.foundText) continue;
+            const q = stillBlank.find(sq => String(sq.questionNumber) === String(r.questionNumber));
+            if (!q) continue;
+            // GROUNDING CHECK: reject anything that doesn't actually appear in the
+            // real transcript — the single most important safeguard here, since
+            // this is the one rescue layer today that isn't purely mechanical.
+            if (!fullTranscript.includes(r.foundText)) {
+                console.warn(`[AiMcqRescue] Q${q.questionNumber}: rejected — claimed text does not verbatim-match the real transcript (possible hallucination).`);
+                continue;
+            }
+            q.studentText = r.foundText;
+            q.requiresReview = true;
+            console.log(`[AiMcqRescue] Q${q.questionNumber}: recovered and verified against transcript — "${r.foundText.substring(0, 100)}"`);
+        }
+    } catch (err) {
+        console.warn(`[AiMcqRescue] Call failed, leaving remaining blank questions exactly as-is: ${err.message}`);
+    }
+}
+
 /**
  * Detects actual PDF page count from base64 data without any library.
  * Reads the /Count field from the PDF cross-reference table.
@@ -7568,6 +7660,7 @@ questions.forEach(q => {
 
             // ── BLANK MCQ/AR/TF RESCUE (runs only on questions with ZERO assigned text) ──
             rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap);
+            await aiRescueBlankMcq(questions, fullTranscript);
             // ── END BLANK MCQ/AR/TF RESCUE ───────────────────────────────────────────
 
             // ─── OCR SELF-VERIFICATION PASS (SA/LA questions only) ──────────────────────
@@ -10105,6 +10198,7 @@ questions.forEach(q => {
 
             // ── BLANK MCQ/AR/TF RESCUE (runs only on questions with ZERO assigned text) ──
             rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap);
+            await aiRescueBlankMcq(questions, fullTranscript);
             // ── END BLANK MCQ/AR/TF RESCUE ───────────────────────────────────────────
 
             // ─── OCR SELF-VERIFICATION PASS (SA/LA questions only) ──────────────────────
