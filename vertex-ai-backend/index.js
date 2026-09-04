@@ -6274,9 +6274,18 @@ function rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMa
         // this single answer line — MCQ/AR/TF answers are always exactly one line,
         // one tag, in this OCR format.
         const ownTag = tagHits.find(t => t.pos > own.end && t.pos < ceiling);
-        if (!ownTag) continue;
+        let sliceEnd = ownTag ? ownTag.end : null;
+        // Some OCR formats emit only ONE coordinate tag for an entire dense list
+        // of short answers (observed directly: 14 MCQs on one page, a single
+        // "[#P:...]" tag only at the very end, none in between) — when there's no
+        // tag between this label and the next question's own label, fall back to
+        // the next label's position itself. Still fully anchored on both sides by
+        // real labels the OCR actually produced — never an open-ended guess, and
+        // only used when nextOther gives a real bound (not end-of-transcript).
+        if (sliceEnd === null && nextOther) sliceEnd = nextOther.pos;
+        if (sliceEnd === null) continue;
 
-        const recovered = fullTranscript.substring(own.end, ownTag.end).trim();
+        const recovered = fullTranscript.substring(own.end, sliceEnd).trim();
         if (recovered.length === 0) continue;
 
         q.studentText = recovered;
