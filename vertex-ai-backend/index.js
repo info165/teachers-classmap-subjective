@@ -479,6 +479,22 @@ function _normQType(rawType) {
         t === 'competency based') return 'SA';
     return rawType; // unrecognized — leave as-is, don't guess
 }
+// Verified directly against real production data (Newtown School, Class IX Maths
+// simulation): 11 of 14 questions on one real graded paper came back with
+// finalFeedback literally reading the text "undefined" — because the grader's
+// JSON response for that question omitted finalFeedback entirely (undefined),
+// and later code concatenates it with other note strings using `+`, which
+// silently coerces a genuinely missing value to the STRING "undefined" instead
+// of throwing or falling back. stepWiseEvaluation still had real, useful
+// comments in every one of those cases — this reconstructs readable feedback
+// from those comments so a teacher never sees the literal word "undefined".
+function _synthesizeFeedbackFromSteps(stepWiseEvaluation) {
+    if (!Array.isArray(stepWiseEvaluation)) return '';
+    return stepWiseEvaluation
+        .filter(s => s && s.comment && String(s.comment).trim())
+        .map(s => (Number(s.marks) > 0 ? `✓ ${s.comment}` : `✗ ${s.comment}`))
+        .join('\n');
+}
 const isSAorLA = (q) => { const t = _normQType(q && q.type); return t === 'SA' || t === 'LA'; };
 const isMcqOrAr = (q) => { const t = _normQType(q && q.type); return t === 'MCQ' || t === 'AR'; };
 
@@ -8882,6 +8898,13 @@ if (gradedResult) {
                     : _independentUnclear
                         ? `\n\n[INDEPENDENT GRADER UNCERTAIN — could not confidently confirm this answer from the image alone. Please check against the original answer sheet]`
                         : '';
+                // See _synthesizeFeedbackFromSteps definition — a missing finalFeedback from
+                // the grader must never reach a teacher as the literal string "undefined".
+                if (!_correctedFeedback) {
+                    _correctedFeedback = _synthesizeFeedbackFromSteps(_correctedStepWise) ||
+                        'No specific feedback was returned for this question — please check the answer manually.';
+                    console.log(`[FeedbackFallback] Q${originalQ.questionNumber}: finalFeedback was missing from the grader response — reconstructed from step comments`);
+                }
                 return {
                     ...gradedClean,
                     marksAwarded: _correctedMarksAwarded,
@@ -11339,10 +11362,15 @@ if (gradedResult) {
                 const _ocrDisagreementNote = originalQ._ocrVerificationDisagreement
                     ? `\n\n[OCR VERIFICATION DISAGREEMENT — please check against the original answer sheet]\nOriginal OCR read: "${(originalQ._ocrVerificationOriginal || '').substring(0, 300)}"\nVerification re-read: "${(originalQ.studentText || '').substring(0, 300)}"`
                     : '';
+                // See _synthesizeFeedbackFromSteps definition — a missing finalFeedback from
+                // the grader must never reach a teacher as an empty (or "undefined") string.
+                const _baseFeedback = gradedClean.finalFeedback ||
+                    _synthesizeFeedbackFromSteps(gradedClean.stepWiseEvaluation) ||
+                    'No specific feedback was returned for this question — please check the answer manually.';
                 return {
                     ...gradedClean,
                     requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement,
-                    finalFeedback: (gradedClean.finalFeedback || '') + _ocrDisagreementNote,
+                    finalFeedback: _baseFeedback + _ocrDisagreementNote,
                         studentOcrAnswer: originalQ.studentText,
                         // FIX: never use || 0 — pageIndices[0] can legitimately BE 0 (page 1)
                         // and 0 || 0 = 0 which is correct by accident, but undefined || 0 = 0
