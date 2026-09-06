@@ -475,7 +475,8 @@ function _normQType(rawType) {
     if (t === 'vsa' || t === 'very short answer') return 'VSA';
     if (t === 'la' || t === 'long answer' || t === 'case study' || t === 'long-answer') return 'LA';
     if (t === 'sa' || t === 'short answer' || t === 'short-answer' || t === 'subjective' ||
-        t === 'problem solving' || t === 'derivation') return 'SA';
+        t === 'problem solving' || t === 'derivation' || t === 'fill in the blanks' ||
+        t === 'competency based') return 'SA';
     return rawType; // unrecognized — leave as-is, don't guess
 }
 const isSAorLA = (q) => { const t = _normQType(q && q.type); return t === 'SA' || t === 'LA'; };
