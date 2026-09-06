@@ -4036,11 +4036,17 @@ console.log(`[Grading] 4-tier: ${complexQuestions.length} complex, ${arQuestions
     function getOrPartnerContext(q) {
         const ci = q.checkingInstructions || "";
         if (!/alternative question \(or\)/i.test(ci)) return null;
-        const m = ci.match(/with\s+question\s+([0-9]+(?:[.\-][a-zA-Z0-9]+)?)/i);
+        const m = ci.match(/with\s+question\s+([0-9]+(?:[.\-][a-zA-Z0-9]+)*)/i);
         if (!m) return null;
         const target = _norm(m[1]);
         const partner = _lookupPool.find(p => _norm(p.questionNumber) === target);
         if (!partner) return null;
+        // Defense in depth: a partner number that normalizes to THIS question's own
+        // number (e.g. a numbering scheme this regex doesn't fully anticipate) must
+        // never resolve to itself — that produced real, confirmed nonsense feedback
+        // ("Student attempted the alternative (Q23.iii) — not this side" on Q23.iii
+        // itself). Treat an unresolvable partner as no partner, not a self-match.
+        if (_norm(partner.questionNumber) === _norm(q.questionNumber)) return null;
         return {
             questionNumber: partner.questionNumber,
             text:           partner.text || "",
@@ -6397,11 +6403,17 @@ async function resolveOrPairsBeforeGrading(questions) {
         const ci = q.checkingInstructions || '';
         if (!/alternative question \(or\)/i.test(ci)) continue;
         if (seen.has(q.questionNumber)) continue;
-        const m = ci.match(/with\s+question\s+([0-9]+(?:[.\-][a-zA-Z0-9]+)?)/i);
+        const m = ci.match(/with\s+question\s+([0-9]+(?:[.\-][a-zA-Z0-9]+)*)/i);
         if (!m) continue;
         const targetNorm = _normQ(m[1]);
         const partner = questions.find(p => _normQ(p.questionNumber) === targetNorm);
         if (!partner || seen.has(partner.questionNumber)) continue;
+        // Defense in depth: never let a partner resolve to the question itself (see
+        // the identical guard in getOrPartnerContext) — confirmed via real data that
+        // a numbering scheme this regex doesn't fully anticipate can otherwise pair
+        // a question with itself, which the discriminator can never meaningfully
+        // resolve (comparing a question's text against its own text).
+        if (_normQ(partner.questionNumber) === _normQ(q.questionNumber)) continue;
         pairs.push([q, partner]);
         seen.add(q.questionNumber);
         seen.add(partner.questionNumber);
