@@ -8345,6 +8345,28 @@ questionWiseReport = questionWiseReport.map(qr => {
                     }));
                 }
 
+                // ── OR-RESOLVED-AWAY ENFORCEMENT (deterministic, code-only) ──────────
+                // The pre-grading OR-pair resolver (resolveOrPairsBeforeGrading) marks the
+                // losing side with _orResolvedAway=true and clears its studentText — a
+                // confident, verified verdict that the student did not attempt this side.
+                // That marker was set but never actually enforced anywhere downstream —
+                // confirmed via a real paper where BOTH sides of an OR pair were awarded
+                // full marks independently (Q23.iii and Q23.iii-OR both 2/2, each with
+                // different, topic-appropriate feedback), even though the resolver had
+                // already decided Q23.iii was the loser. Whatever upstream mechanism let
+                // content back in for a resolved-away side, this closes the loop
+                // unconditionally: a side the resolver already confidently rejected can
+                // never keep a nonzero mark.
+                if (question && question._orResolvedAway && awarded > 0) {
+                    console.log(`[OrResolvedAway] Q${qr.questionNumber}: resolver confidently decided this side wasn't attempted, but grader awarded ${awarded} — clamping to 0.`);
+                    awarded = 0;
+                    qr.marksAwarded = 0;
+                    if (Array.isArray(qr.stepWiseEvaluation)) {
+                        qr.stepWiseEvaluation = qr.stepWiseEvaluation.map(s => ({ ...s, marks: 0 }));
+                    }
+                    qr.requiresReview = true;
+                }
+
                 // ── STEP-SUM / MARKS-AWARDED CONSISTENCY FIX (deterministic, code-only) ──
                 // Never raises marksAwarded — only ever clamps the DISPLAYED per-step
                 // marks down so they can't sum to more than what's actually awarded.
@@ -10902,6 +10924,28 @@ questionWiseReport = questionWiseReport.map(qr => {
                         ...step,
                         comment: fixOrSentence(step.comment)
                     }));
+                }
+
+                // ── OR-RESOLVED-AWAY ENFORCEMENT (deterministic, code-only) ──────────
+                // The pre-grading OR-pair resolver (resolveOrPairsBeforeGrading) marks the
+                // losing side with _orResolvedAway=true and clears its studentText — a
+                // confident, verified verdict that the student did not attempt this side.
+                // That marker was set but never actually enforced anywhere downstream —
+                // confirmed via a real paper where BOTH sides of an OR pair were awarded
+                // full marks independently (Q23.iii and Q23.iii-OR both 2/2, each with
+                // different, topic-appropriate feedback), even though the resolver had
+                // already decided Q23.iii was the loser. Whatever upstream mechanism let
+                // content back in for a resolved-away side, this closes the loop
+                // unconditionally: a side the resolver already confidently rejected can
+                // never keep a nonzero mark.
+                if (question && question._orResolvedAway && awarded > 0) {
+                    console.log(`[OrResolvedAway] Q${qr.questionNumber}: resolver confidently decided this side wasn't attempted, but grader awarded ${awarded} — clamping to 0.`);
+                    awarded = 0;
+                    qr.marksAwarded = 0;
+                    if (Array.isArray(qr.stepWiseEvaluation)) {
+                        qr.stepWiseEvaluation = qr.stepWiseEvaluation.map(s => ({ ...s, marks: 0 }));
+                    }
+                    qr.requiresReview = true;
                 }
 
                 // ── STEP-SUM / MARKS-AWARDED CONSISTENCY FIX (deterministic, code-only) ──
