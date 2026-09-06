@@ -3987,10 +3987,24 @@ description: "The GRANULAR sub-concept this question tests. Rule: if your answer
             },
             required: ["marks", "pageIndex", "stepPoint"]
         }
+    },
+    // Verified directly against real production data across every subject tested
+    // (Maths, Physics, Chemistry, English — full real-pipeline simulation): this
+    // schema never declared finalFeedback as a property at all, let alone required.
+    // With structured JSON output enforced via responseSchema, that means the model
+    // had no contract to reliably produce this field — it came back missing on a
+    // large share of real graded questions (mostly the heavier SA/LA/complex-tier
+    // ones), reaching a teacher as a blank or literal "undefined" before this was
+    // caught. The OTHER grading path in this file (gradeWholeDocumentAgainstSarvamOcr,
+    // ~line 2454) already declares finalFeedback as required — this brings the main
+    // grading schema used by every real job in line with that.
+    finalFeedback: {
+        type: "string",
+        description: "The complete, specific feedback explaining this question's grade — never leave this blank or omit it."
     }
 },
 required: ["questionNumber", "marksAwarded", "requiresReview",
-           "chapterTopic", "questionType", "stepWiseEvaluation"]
+           "chapterTopic", "questionType", "stepWiseEvaluation", "finalFeedback"]
         }
     };
 const COMPLEX_TYPES = ['LA', 'CS', 'DBQ'];
