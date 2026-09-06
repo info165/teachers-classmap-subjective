@@ -8247,8 +8247,9 @@ if (sp && coordBounds && coordBounds.byPage.size > 0) {
             const NEGATIVE_SIGNALS = [
                 'incorrect', 'wrong', 'error', 'missing', 'incomplete', 'not provided',
                 'not mentioned', 'does not', "doesn't", 'absent', 'failed', 'no diagram',
-                'unattempted', 'not attempted', 'calculation error', 'conceptual error',
-                'not matching', 'differs', 'mismatch'
+                'unattempted', 'not attempted', 'did not attempt', 'calculation error', 'conceptual error',
+                'not matching', 'differs', 'mismatch', 'for a different question', 'answer provided is for',
+                'does not address'
             ];
 questionWiseReport = questionWiseReport.map(qr => {
                 const maxMarks = qr.maxMarksForQuestion || 0;
@@ -10782,8 +10783,9 @@ if (sp && coordBounds && coordBounds.byPage.size > 0) {
             const NEGATIVE_SIGNALS = [
                 'incorrect', 'wrong', 'error', 'missing', 'incomplete', 'not provided',
                 'not mentioned', 'does not', "doesn't", 'absent', 'failed', 'no diagram',
-                'unattempted', 'not attempted', 'calculation error', 'conceptual error',
-                'not matching', 'differs', 'mismatch'
+                'unattempted', 'not attempted', 'did not attempt', 'calculation error', 'conceptual error',
+                'not matching', 'differs', 'mismatch', 'for a different question', 'answer provided is for',
+                'does not address'
             ];
 questionWiseReport = questionWiseReport.map(qr => {
                 const maxMarks = qr.maxMarksForQuestion || 0;
