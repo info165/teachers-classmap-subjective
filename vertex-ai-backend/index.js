@@ -8298,14 +8298,30 @@ questionWiseReport = questionWiseReport.map(qr => {
                 // correct one; it never touches any other text.
                 const _orSentenceRe = /(attempted the alternative\s*\()([^()]*)(\)\s*[-–—]\s*not this side\.?)/i;
                 const fixOrSentence = (text) => {
-                    if (!text || !question || !question._orPartnerQNum) return text;
+                    if (!text) return text;
                     if (!_orSentenceRe.test(text)) return text;
-                    // The prompt template hardcodes a literal "Q" before the number
-                    // ("...alternative (Q<orPartner.questionNumber>)...") — confirmed by
-                    // every correctly-working real example ("Q31", "Q32", "Q34-OR").
-                    // Re-add it here too, unless the stored value already starts with one.
-                    const qLabel = /^q/i.test(question._orPartnerQNum) ? question._orPartnerQNum : `Q${question._orPartnerQNum}`;
-                    return text.replace(_orSentenceRe, `$1${qLabel}$3`);
+                    if (question && question._orPartnerQNum) {
+                        // The prompt template hardcodes a literal "Q" before the number
+                        // ("...alternative (Q<orPartner.questionNumber>)...") — confirmed by
+                        // every correctly-working real example ("Q31", "Q32", "Q34-OR").
+                        // Re-add it here too, unless the stored value already starts with one.
+                        const qLabel = /^q/i.test(question._orPartnerQNum) ? question._orPartnerQNum : `Q${question._orPartnerQNum}`;
+                        return text.replace(_orSentenceRe, `$1${qLabel}$3`);
+                    }
+                    // No verified partner resolved (e.g. checkingInstructions pointed at a
+                    // question number that doesn't exist — confirmed via real data: an OR
+                    // alternative written against a combined multi-part question, like
+                    // "25-OR" referencing bare "Question 25" when only "25.a"/"25.b" exist).
+                    // With no real number to substitute, the model can fall back to echoing
+                    // its own internal batch identifier (our _uid values look exactly like
+                    // "uid_33_1788722300224") straight into teacher-facing feedback. Never
+                    // let that leak through verbatim — swap it for a safe generic phrase.
+                    // Leave anything that doesn't look like our internal ID format alone,
+                    // since we have no verified replacement for it.
+                    return text.replace(_orSentenceRe, (m, p1, p2, p3) => {
+                        const looksInternal = /^q?u?id[_-]?\d/i.test(String(p2 || '').trim());
+                        return looksInternal ? `${p1}the alternative side${p3}` : m;
+                    });
                 };
                 if (qr.finalFeedback) qr.finalFeedback = fixOrSentence(qr.finalFeedback);
                 if (Array.isArray(qr.stepWiseEvaluation)) {
@@ -10841,14 +10857,30 @@ questionWiseReport = questionWiseReport.map(qr => {
                 // correct one; it never touches any other text.
                 const _orSentenceRe = /(attempted the alternative\s*\()([^()]*)(\)\s*[-–—]\s*not this side\.?)/i;
                 const fixOrSentence = (text) => {
-                    if (!text || !question || !question._orPartnerQNum) return text;
+                    if (!text) return text;
                     if (!_orSentenceRe.test(text)) return text;
-                    // The prompt template hardcodes a literal "Q" before the number
-                    // ("...alternative (Q<orPartner.questionNumber>)...") — confirmed by
-                    // every correctly-working real example ("Q31", "Q32", "Q34-OR").
-                    // Re-add it here too, unless the stored value already starts with one.
-                    const qLabel = /^q/i.test(question._orPartnerQNum) ? question._orPartnerQNum : `Q${question._orPartnerQNum}`;
-                    return text.replace(_orSentenceRe, `$1${qLabel}$3`);
+                    if (question && question._orPartnerQNum) {
+                        // The prompt template hardcodes a literal "Q" before the number
+                        // ("...alternative (Q<orPartner.questionNumber>)...") — confirmed by
+                        // every correctly-working real example ("Q31", "Q32", "Q34-OR").
+                        // Re-add it here too, unless the stored value already starts with one.
+                        const qLabel = /^q/i.test(question._orPartnerQNum) ? question._orPartnerQNum : `Q${question._orPartnerQNum}`;
+                        return text.replace(_orSentenceRe, `$1${qLabel}$3`);
+                    }
+                    // No verified partner resolved (e.g. checkingInstructions pointed at a
+                    // question number that doesn't exist — confirmed via real data: an OR
+                    // alternative written against a combined multi-part question, like
+                    // "25-OR" referencing bare "Question 25" when only "25.a"/"25.b" exist).
+                    // With no real number to substitute, the model can fall back to echoing
+                    // its own internal batch identifier (our _uid values look exactly like
+                    // "uid_33_1788722300224") straight into teacher-facing feedback. Never
+                    // let that leak through verbatim — swap it for a safe generic phrase.
+                    // Leave anything that doesn't look like our internal ID format alone,
+                    // since we have no verified replacement for it.
+                    return text.replace(_orSentenceRe, (m, p1, p2, p3) => {
+                        const looksInternal = /^q?u?id[_-]?\d/i.test(String(p2 || '').trim());
+                        return looksInternal ? `${p1}the alternative side${p3}` : m;
+                    });
                 };
                 if (qr.finalFeedback) qr.finalFeedback = fixOrSentence(qr.finalFeedback);
                 if (Array.isArray(qr.stepWiseEvaluation)) {
