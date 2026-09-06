@@ -7718,7 +7718,12 @@ ${q.studentText}
 Look ONLY at the handwritten region on this page that answers Question ${q.questionNumber}. Character by character, digit by digit, symbol by symbol, does the transcription above EXACTLY match what is written? You are checking transcription accuracy only, like a proofreader checking a typed copy against a handwritten original — do NOT evaluate whether the answer is mathematically correct, do NOT fix a wrong derivation, do NOT recalculate anything.
 
 If the transcription exactly matches the ink, respond with exactly: SAME
-If it does NOT match, respond with ONLY the FULL corrected transcription, start to finish — never a partial excerpt or just the part that changed (same format — LaTeX for math, [#P:...] tags preserved where you can still identify them) — nothing else, no explanation, no preamble.` }
+
+If it does NOT match, first classify the difference on its own line, then give the full corrected transcription starting on the next line:
+- If the difference is purely COSMETIC — spacing, line breaks, equivalent notation (e.g. x^2 vs x²), an OCR-artifact character, punctuation, formatting — and does NOT change what a grader would need to evaluate, start your response with exactly: COSMETIC
+- If the difference changes actual content — a number, word, symbol, or step that could affect whether the answer should be graded as correct or incorrect — start your response with exactly: SUBSTANTIVE
+
+Then, on the following line(s), give ONLY the FULL corrected transcription, start to finish — never a partial excerpt or just the part that changed (same format — LaTeX for math, [#P:...] tags preserved where you can still identify them) — nothing else, no explanation, no preamble.` }
                             ]
                         }],
                         generationConfig: {
@@ -7732,7 +7737,17 @@ If it does NOT match, respond with ONLY the FULL corrected transcription, start 
                     });
                     const verifyCandidate = verifyResult.response.candidates[0];
                     const verifyFinishReason = verifyCandidate.finishReason;
-                    const verifyText = (verifyCandidate.content.parts[0].text || '').trim();
+                    const verifyRaw = (verifyCandidate.content.parts[0].text || '').trim();
+                    // Strip the required COSMETIC/SUBSTANTIVE classification line, if present,
+                    // before treating the rest as the transcription text — everything below
+                    // (confirmation check, length checks, assignment) operates on the text
+                    // alone exactly as before. If the model didn't follow the tag format for
+                    // some reason, fail SAFE: treat it as SUBSTANTIVE (still flags for review,
+                    // same as the original behavior) rather than silently suppressing a review
+                    // we can't actually classify.
+                    const _classMatch = verifyRaw.match(/^(COSMETIC|SUBSTANTIVE)\s*\n([\s\S]*)$/i);
+                    const verifyDifferenceClass = _classMatch ? _classMatch[1].toUpperCase() : 'SUBSTANTIVE';
+                    const verifyText = (_classMatch ? _classMatch[2] : verifyRaw).trim();
                     // If the model's own response got cut off by the output limit, its
                     // content is an unreliable partial fragment, not a real correction —
                     // discard it and keep the original rather than trust an incomplete
@@ -7757,10 +7772,18 @@ If it does NOT match, respond with ONLY the FULL corrected transcription, start 
                     } else if (suspiciouslyShort) {
                         console.warn(`[OCRVerify] Q${q.questionNumber}: "correction" is ${verifyText.length} chars vs original ${q.studentText.length} chars — too short to trust, discarding, keeping original transcript`);
                     } else if (verifyText && !isConfirmation && verifyText.length > 5) {
-                        console.log(`[OCRVerify] Q${q.questionNumber}: verification pass disagrees with original transcript — will flag for review`);
+                        // Always use the more accurate corrected transcription for grading —
+                        // that part is unconditional, exactly as before. Only the REVIEW FLAG
+                        // is now gated: a COSMETIC difference (spacing, equivalent notation,
+                        // OCR artifacts) can't change how the answer should be scored, so
+                        // grading already benefits from the correction without needing to
+                        // interrupt a teacher about it. A SUBSTANTIVE difference still forces
+                        // review exactly as before.
+                        const isCosmetic = verifyDifferenceClass === 'COSMETIC';
+                        console.log(`[OCRVerify] Q${q.questionNumber}: verification pass disagrees with original transcript (${verifyDifferenceClass}) — ${isCosmetic ? 'using corrected text, no review needed' : 'will flag for review'}`);
                         q._ocrVerificationOriginal = q.studentText;
                         q.studentText = verifyText;
-                        q._ocrVerificationDisagreement = true;
+                        if (!isCosmetic) q._ocrVerificationDisagreement = true;
                     }
                 } catch (verifyErr) {
                     console.warn(`[OCRVerify] Q${q.questionNumber}: verification call failed, keeping original transcript: ${verifyErr.message}`);
@@ -8781,22 +8804,53 @@ if (gradedResult) {
                     ? `\n\n[OCR VERIFICATION DISAGREEMENT — please check against the original answer sheet]\nOriginal OCR read: "${(originalQ._ocrVerificationOriginal || '').substring(0, 300)}"\nVerification re-read: "${(originalQ.studentText || '').substring(0, 300)}"`
                     : '';
                 // INDEPENDENT MCQ/AR GRADER DISAGREEMENT (see pass above): a from-scratch
-                // read of the image, with zero input from OCR/librarian/grader, disagreeing
-                // with (or unable to confirm) the pipeline's own verdict — same rule, always
-                // surfaced for a human, never silently trusted either way.
+                // read of the image, with zero input from OCR/librarian/grader. Per explicit
+                // instruction, a CONFIDENT disagreement (CORRECT or INCORRECT, not UNCLEAR) is
+                // now APPLIED to the marks — not just flagged — because this is a genuinely
+                // independent, focused, image-grounded verdict, the same standard already
+                // trusted to act (not just flag) in the OR-pair resolver and MCQ blank rescue
+                // earlier. requiresReview STAYS true regardless, so a teacher always sees and
+                // can override an auto-correction; only UNCLEAR remains flag-only, since that
+                // is genuine uncertainty with nothing to confidently act on.
                 const _pipelineSaysCorrect = (gradedClean.marksAwarded || 0) >= (gradedClean.maxMarksForQuestion || 1);
                 const _independentDisagrees = originalQ._independentGraderVerdict === 'CORRECT' && !_pipelineSaysCorrect
                     || originalQ._independentGraderVerdict === 'INCORRECT' && _pipelineSaysCorrect;
                 const _independentUnclear = originalQ._independentGraderVerdict === 'UNCLEAR';
+
+                let _correctedMarksAwarded = gradedClean.marksAwarded;
+                let _correctedStepWise = gradedClean.stepWiseEvaluation;
+                let _correctedFeedback = gradedClean.finalFeedback;
+                if (_independentDisagrees) {
+                    const maxMarks = gradedClean.maxMarksForQuestion || 0;
+                    _correctedMarksAwarded = originalQ._independentGraderVerdict === 'CORRECT' ? maxMarks : 0;
+                    // Keep the step-wise display internally consistent with the corrected
+                    // total (same "never leave a self-contradictory breakdown" principle as
+                    // the step-sum fix elsewhere) — mirrors the deterministic MCQ letter-
+                    // override pattern already used for ordinary MCQ grading.
+                    if (Array.isArray(_correctedStepWise) && _correctedStepWise.length > 0) {
+                        _correctedStepWise = _correctedStepWise.map((s, i) => ({ ...s, marks: (i === 0 ? _correctedMarksAwarded : 0) }));
+                    }
+                    // The original feedback text described the PRE-correction verdict (e.g.
+                    // "B - Incorrect...") — leaving it as-is would now contradict the
+                    // corrected marks. Replace it with an honest statement of what actually
+                    // changed and why, rather than a stale, self-contradicting explanation.
+                    _correctedFeedback = originalQ._independentGraderVerdict === 'CORRECT'
+                        ? 'Correct — confirmed by an independent, focused re-read of the answer image.'
+                        : `Incorrect — confirmed by an independent, focused re-read of the answer image. Correct answer: ${(originalQ.answer || '').substring(0, 200)}`;
+                    console.log(`[IndependentGrader] Q${originalQ.questionNumber}: auto-corrected marksAwarded ${gradedClean.marksAwarded} -> ${_correctedMarksAwarded} (verdict=${originalQ._independentGraderVerdict})`);
+                }
+
                 const _independentNote = _independentDisagrees
-                    ? `\n\n[INDEPENDENT GRADER DISAGREEMENT — an independent read of the image, done separately from OCR/grading, reached a different conclusion: ${originalQ._independentGraderVerdict}. Please check against the original answer sheet]`
+                    ? `\n\n[AUTO-CORRECTED BY INDEPENDENT GRADER — a focused re-read of the image, separate from OCR/grading, determined this answer is ${originalQ._independentGraderVerdict}; marks updated accordingly. Please verify against the original answer sheet]`
                     : _independentUnclear
                         ? `\n\n[INDEPENDENT GRADER UNCERTAIN — could not confidently confirm this answer from the image alone. Please check against the original answer sheet]`
                         : '';
                 return {
                     ...gradedClean,
+                    marksAwarded: _correctedMarksAwarded,
+                    stepWiseEvaluation: _correctedStepWise,
                     requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement || _independentDisagrees || _independentUnclear,
-                    finalFeedback: (gradedClean.finalFeedback || '') + _ocrDisagreementNote + _independentNote,
+                    finalFeedback: _correctedFeedback + _ocrDisagreementNote + _independentNote,
                         studentOcrAnswer: originalQ.studentText,
                         // FIX: never use || 0 — pageIndices[0] can legitimately BE 0 (page 1)
                         // and 0 || 0 = 0 which is correct by accident, but undefined || 0 = 0
@@ -10256,7 +10310,12 @@ ${q.studentText}
 Look ONLY at the handwritten region on this page that answers Question ${q.questionNumber}. Character by character, digit by digit, symbol by symbol, does the transcription above EXACTLY match what is written? You are checking transcription accuracy only, like a proofreader checking a typed copy against a handwritten original — do NOT evaluate whether the answer is mathematically correct, do NOT fix a wrong derivation, do NOT recalculate anything.
 
 If the transcription exactly matches the ink, respond with exactly: SAME
-If it does NOT match, respond with ONLY the FULL corrected transcription, start to finish — never a partial excerpt or just the part that changed (same format — LaTeX for math, [#P:...] tags preserved where you can still identify them) — nothing else, no explanation, no preamble.` }
+
+If it does NOT match, first classify the difference on its own line, then give the full corrected transcription starting on the next line:
+- If the difference is purely COSMETIC — spacing, line breaks, equivalent notation (e.g. x^2 vs x²), an OCR-artifact character, punctuation, formatting — and does NOT change what a grader would need to evaluate, start your response with exactly: COSMETIC
+- If the difference changes actual content — a number, word, symbol, or step that could affect whether the answer should be graded as correct or incorrect — start your response with exactly: SUBSTANTIVE
+
+Then, on the following line(s), give ONLY the FULL corrected transcription, start to finish — never a partial excerpt or just the part that changed (same format — LaTeX for math, [#P:...] tags preserved where you can still identify them) — nothing else, no explanation, no preamble.` }
                             ]
                         }],
                         generationConfig: {
@@ -10270,7 +10329,17 @@ If it does NOT match, respond with ONLY the FULL corrected transcription, start 
                     });
                     const verifyCandidate = verifyResult.response.candidates[0];
                     const verifyFinishReason = verifyCandidate.finishReason;
-                    const verifyText = (verifyCandidate.content.parts[0].text || '').trim();
+                    const verifyRaw = (verifyCandidate.content.parts[0].text || '').trim();
+                    // Strip the required COSMETIC/SUBSTANTIVE classification line, if present,
+                    // before treating the rest as the transcription text — everything below
+                    // (confirmation check, length checks, assignment) operates on the text
+                    // alone exactly as before. If the model didn't follow the tag format for
+                    // some reason, fail SAFE: treat it as SUBSTANTIVE (still flags for review,
+                    // same as the original behavior) rather than silently suppressing a review
+                    // we can't actually classify.
+                    const _classMatch = verifyRaw.match(/^(COSMETIC|SUBSTANTIVE)\s*\n([\s\S]*)$/i);
+                    const verifyDifferenceClass = _classMatch ? _classMatch[1].toUpperCase() : 'SUBSTANTIVE';
+                    const verifyText = (_classMatch ? _classMatch[2] : verifyRaw).trim();
                     // If the model's own response got cut off by the output limit, its
                     // content is an unreliable partial fragment, not a real correction —
                     // discard it and keep the original rather than trust an incomplete
@@ -10295,10 +10364,18 @@ If it does NOT match, respond with ONLY the FULL corrected transcription, start 
                     } else if (suspiciouslyShort) {
                         console.warn(`[OCRVerify] Q${q.questionNumber}: "correction" is ${verifyText.length} chars vs original ${q.studentText.length} chars — too short to trust, discarding, keeping original transcript`);
                     } else if (verifyText && !isConfirmation && verifyText.length > 5) {
-                        console.log(`[OCRVerify] Q${q.questionNumber}: verification pass disagrees with original transcript — will flag for review`);
+                        // Always use the more accurate corrected transcription for grading —
+                        // that part is unconditional, exactly as before. Only the REVIEW FLAG
+                        // is now gated: a COSMETIC difference (spacing, equivalent notation,
+                        // OCR artifacts) can't change how the answer should be scored, so
+                        // grading already benefits from the correction without needing to
+                        // interrupt a teacher about it. A SUBSTANTIVE difference still forces
+                        // review exactly as before.
+                        const isCosmetic = verifyDifferenceClass === 'COSMETIC';
+                        console.log(`[OCRVerify] Q${q.questionNumber}: verification pass disagrees with original transcript (${verifyDifferenceClass}) — ${isCosmetic ? 'using corrected text, no review needed' : 'will flag for review'}`);
                         q._ocrVerificationOriginal = q.studentText;
                         q.studentText = verifyText;
-                        q._ocrVerificationDisagreement = true;
+                        if (!isCosmetic) q._ocrVerificationDisagreement = true;
                     }
                 } catch (verifyErr) {
                     console.warn(`[OCRVerify] Q${q.questionNumber}: verification call failed, keeping original transcript: ${verifyErr.message}`);
