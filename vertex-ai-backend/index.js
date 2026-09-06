@@ -446,6 +446,42 @@ function validateAndNormalizeQuestions(questions) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// QUESTION TYPE NORMALIZATION
+// ─────────────────────────────────────────────────────────────────────────────
+// The QP-import pipeline (a separate, AI-driven process that turns a question
+// paper into the `questions` array) does NOT reliably write the canonical type
+// tokens (MCQ / VSA / SA / LA / Assertion-Reason / True-False) that the rest of
+// this file expects. Verified directly against real production data (Newtown
+// School, Class XI Core Mathematics, assessment EsEYmhvN5Y2tNwgIzjL3): the SAME
+// paper has q.type values "SA", "Short Answer", "short answer", "Subjective",
+// "Problem Solving", and "Assertion-Reason" all mixed together for what are,
+// functionally, the same two kinds of question (short/long subjective answer,
+// and assertion-reason MCQ-style). Every exact `q.type === 'SA'` style check
+// below silently treats anything that isn't a perfect string match as "none of
+// the above" — which means, confirmed in this real paper, several subjective
+// questions never get a page image passed to the grader (needsPageImage stays
+// false) and never get the OCR self-verification pass, and both Assertion-
+// Reason questions never get the Independent MCQ/AR Grader Pass, purely
+// because the stored type string was "Assertion-Reason" and one check only
+// recognized "AR". None of this is guessable from the code alone without the
+// real data — normalize once, here, so every downstream check (which still
+// checks the same canonical tokens as before) works regardless of which
+// synonym the import step happened to write.
+function _normQType(rawType) {
+    const t = String(rawType || '').trim().toLowerCase();
+    if (t === 'mcq') return 'MCQ';
+    if (t === 'ar' || t === 'assertion-reason' || t === 'assertion reason' || t === 'assertion_reason') return 'AR';
+    if (t === 'true-false' || t === 'true/false' || t === 'truefalse' || t === 'true false') return 'True/False';
+    if (t === 'vsa' || t === 'very short answer') return 'VSA';
+    if (t === 'la' || t === 'long answer' || t === 'case study' || t === 'long-answer') return 'LA';
+    if (t === 'sa' || t === 'short answer' || t === 'short-answer' || t === 'subjective' ||
+        t === 'problem solving' || t === 'derivation') return 'SA';
+    return rawType; // unrecognized — leave as-is, don't guess
+}
+const isSAorLA = (q) => { const t = _normQType(q && q.type); return t === 'SA' || t === 'LA'; };
+const isMcqOrAr = (q) => { const t = _normQType(q && q.type); return t === 'MCQ' || t === 'AR'; };
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GEMINI RETRY WRAPPER
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -4060,7 +4096,7 @@ checkingInstructions: q.checkingInstructions || "",
         // one is unconditional on subject/marks because the transcript-cross-check use
         // case (see collection loop above) applies regardless of subject, and the image
         // token cost is negligible (~$0.00008/image at current Flash pricing).
-        const hasDerivationQuestion = batch.some(q => q.type === 'SA' || q.type === 'LA');
+        const hasDerivationQuestion = batch.some(q => isSAorLA(q));
         const batchNeedsImages = diagramImageParts.length > 0 &&
             (useThinking || (isSTEMSubject && batch.some(q => q.marks >= 3)) || hasDerivationQuestion);
         const parts = batchNeedsImages
@@ -7685,7 +7721,7 @@ questions.forEach(q => {
             // below), so a teacher makes the final call on any genuine disagreement. This can
             // only add review flags, never silently swap a correct grade for a wrong one.
             for (const q of questions) {
-                if (q.type !== 'SA' && q.type !== 'LA') continue;
+                if (!isSAorLA(q)) continue;
                 if (!q.studentText || q.studentText.trim().length < 10) continue; // nothing to verify
                 const pagesForQ = pageMap.get(q._uid) || new Set();
                 const firstPage = Array.from(pagesForQ).sort((a, b) => a - b)[0];
@@ -7802,7 +7838,7 @@ Then, on the following line(s), give ONLY the FULL corrected transcription, star
             // (or genuine uncertainty) is always forced to review with both verdicts shown
             // (see REPORT RECONSTRUCTION below), a teacher makes the final call.
             for (const q of questions) {
-                if (q.type !== 'MCQ' && q.type !== 'AR') continue;
+                if (!isMcqOrAr(q)) continue;
                 const pagesForQ = pageMap.get(q._uid) || new Set();
                 const firstPage = Array.from(pagesForQ).sort((a, b) => a - b)[0];
                 if (!firstPage) continue;
@@ -7908,7 +7944,7 @@ for (const q of questions) {
                 const diagramImageParts = [];
                 const seenDiagramPages = new Set();
                 for (const q of batch) {
-                    const needsPageImage = !!q.imagePrompt || q.type === 'SA' || q.type === 'LA';
+                    const needsPageImage = !!q.imagePrompt || isSAorLA(q);
                     if (!needsPageImage) continue;
       const pagesForQ = pageMap.get(q._uid) || new Set();
                     for (const pgNum of pagesForQ) {
@@ -8023,7 +8059,7 @@ const slicedTranscript = batch.map(q => {
                     // Find MCQ subpart families where both siblings share the same text
                     const mcqSubpartFamilies = new Map(); // parentNum -> [q, ...]
                     for (const q of batch) {
-                        if (q.type !== 'MCQ' && q.type !== 'AR' && q.type !== 'Assertion-Reason') continue;
+                        if (!isMcqOrAr(q)) continue;
                         const qNumRaw = String(q.questionNumber || '');
                         const subPartMatch = qNumRaw.match(/(\d+)[.\s]*(?:\(([ivxIVX]+)\)|([ivxIVX]+))/i);
                         if (!subPartMatch) continue;
@@ -8287,14 +8323,13 @@ questionWiseReport = questionWiseReport.map(qr => {
                 const feedback = (cleanedFeedback || '').toLowerCase();
                 const hasNegativeSignal = NEGATIVE_SIGNALS.some(sig => feedback.includes(sig));
 
-const isMcqFormat = (qr.type === 'MCQ') || (qr.type === 'AR') ||
-    (qr.type === 'Assertion-Reason') ||
+const isMcqFormat = isMcqOrAr(qr) ||
     (qr.maxMarksForQuestion <= 1 && !!(qr.finalFeedback || '').match(/^[A-Da-d]\s*[-–]/)) ||
     !!(qr.finalFeedback || '').match(/^[A-Da-d]\s*[-–]/);
 
 
 
-    if (qr.type === 'True/False') {
+    if (_normQType(qr.type) === 'True/False') {
     const toTF = (s) => {
         const n = (s||'').toLowerCase().replace(/[^a-z]/g,'');
         if (n === 'true' || n === 't') return 'TRUE';
@@ -10277,7 +10312,7 @@ questions.forEach(q => {
             // below), so a teacher makes the final call on any genuine disagreement. This can
             // only add review flags, never silently swap a correct grade for a wrong one.
             for (const q of questions) {
-                if (q.type !== 'SA' && q.type !== 'LA') continue;
+                if (!isSAorLA(q)) continue;
                 if (!q.studentText || q.studentText.trim().length < 10) continue; // nothing to verify
                 const pagesForQ = pageMap.get(q._uid) || new Set();
                 const firstPage = Array.from(pagesForQ).sort((a, b) => a - b)[0];
@@ -10444,7 +10479,7 @@ for (const q of questions) {
                 const diagramImageParts = [];
                 const seenDiagramPages = new Set();
                 for (const q of batch) {
-                    const needsPageImage = !!q.imagePrompt || q.type === 'SA' || q.type === 'LA';
+                    const needsPageImage = !!q.imagePrompt || isSAorLA(q);
                     if (!needsPageImage) continue;
       const pagesForQ = pageMap.get(q._uid) || new Set();
                     for (const pgNum of pagesForQ) {
@@ -10559,7 +10594,7 @@ const slicedTranscript = batch.map(q => {
                     // Find MCQ subpart families where both siblings share the same text
                     const mcqSubpartFamilies = new Map(); // parentNum -> [q, ...]
                     for (const q of batch) {
-                        if (q.type !== 'MCQ' && q.type !== 'AR' && q.type !== 'Assertion-Reason') continue;
+                        if (!isMcqOrAr(q)) continue;
                         const qNumRaw = String(q.questionNumber || '');
                         const subPartMatch = qNumRaw.match(/(\d+)[.\s]*(?:\(([ivxIVX]+)\)|([ivxIVX]+))/i);
                         if (!subPartMatch) continue;
@@ -10823,14 +10858,13 @@ questionWiseReport = questionWiseReport.map(qr => {
                 const feedback = (cleanedFeedback || '').toLowerCase();
                 const hasNegativeSignal = NEGATIVE_SIGNALS.some(sig => feedback.includes(sig));
 
-const isMcqFormat = (qr.type === 'MCQ') || (qr.type === 'AR') ||
-    (qr.type === 'Assertion-Reason') ||
+const isMcqFormat = isMcqOrAr(qr) ||
     (qr.maxMarksForQuestion <= 1 && !!(qr.finalFeedback || '').match(/^[A-Da-d]\s*[-–]/)) ||
     !!(qr.finalFeedback || '').match(/^[A-Da-d]\s*[-–]/);
 
 
 
-    if (qr.type === 'True/False') {
+    if (_normQType(qr.type) === 'True/False') {
     const toTF = (s) => {
         const n = (s||'').toLowerCase().replace(/[^a-z]/g,'');
         if (n === 'true' || n === 't') return 'TRUE';
