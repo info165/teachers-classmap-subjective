@@ -5570,6 +5570,25 @@ if (compoundRoman.test(orphanNorm)) {
     return null; // truly ambiguous → escalate to LLM rescue
 }
 
+// Extracts just the BASE question number from a raw label, for the out-of-range
+// guard below. Deliberately does NOT use normalizeLabelForMatch()'s output — that
+// function strips periods entirely ("36.1" -> "361"), which is correct for
+// MATCHING a label against a master ID (both sides go through the same
+// stripping) but wrong for THIS check: re-parsing "361" with /^(\d+)/ grabs the
+// whole glued string, making a perfectly valid sub-part label like "36.1" or
+// "37.2" look like an out-of-range number (361, 372) and get silently rejected.
+// This only strips the common textual prefixes (Ans/Q/Sol/...) and then takes
+// the leading digit run from what's left — so it stops naturally at the "."
+// separating a base number from its sub-part, exactly like the FIRST copy of
+// this guard (parseQLabelBoundaries, which already reads the untouched raw
+// label and has never had this bug).
+function _extractBaseQuestionNum(raw) {
+    if (!raw) return 0;
+    const stripped = String(raw).trim().replace(/^(ans(?:wer)?|q(?:uestion|n)?|sol(?:ution)?)\.?\s*[-:]?\s*/i, '');
+    const m = stripped.match(/^(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+}
+
 function deterministicBoundaryResolver(fullTranscript, masterIds, questions) {
     const lines = fullTranscript.split('\n');
     let boundaries = [];
@@ -5679,7 +5698,7 @@ if (subpartStripMatch) {
         // Catches student-written labels like "57.)" and "18.)" when the paper only has
         // Q1-Q13 — these are section/textbook numbers, not answer labels.
         if (masterIds.length > 0) {
-            const labelNum = parseInt((normLabel.match(/^(\d+)/) || [])[1] || '0', 10);
+            const labelNum = _extractBaseQuestionNum(b.rawLabel);
             const maxMasterNum = Math.max(...masterIds.map(id => {
                 const m = String(id).match(/(\d+)/);
                 return m ? parseInt(m[1], 10) : 0;
