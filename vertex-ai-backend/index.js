@@ -6171,34 +6171,6 @@ Return ONLY valid JSON:
  * then, only if that fails, one targeted LLM call over the full transcript
  * to relocate the real answer. Never touches a question the check confirms.
  */
-async function _boundaryMatchVerdict(qNumber, qText, candidateText) {
-    // Shared MATCH/MISMATCH check — used both to flag a CURRENT wrongly-assigned
-    // text and, symmetrically, to verify a CANDIDATE replacement before it is
-    // accepted. Never let a candidate in without running it through this same
-    // check the original text had to pass.
-    const checkModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const checkResult = await callGeminiWithRetry(checkModel, {
-        contents: [{
-            role: 'user',
-            parts: [{
-                text: `Question ${qNumber} asks: "${(qText || '').substring(0, 300)}"
-
-Text to check:
-"""
-${candidateText.substring(0, 1000)}
-"""
-
-Does this text plausibly answer QUESTION ${qNumber} specifically — or does it look like it is actually a DIFFERENT question's answer that got misassigned here (wrong topic, wrong numbers, unrelated working)?
-
-Respond with ONLY one word: MATCH or MISMATCH.`
-            }]
-        }],
-        generationConfig: { candidateCount: 1, temperature: 0, topP: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
-    });
-    const verdict = (checkResult.response.candidates[0].content.parts[0].text || '').trim().toUpperCase();
-    return verdict.includes('MISMATCH') ? 'MISMATCH' : 'MATCH';
-}
-
 async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, pageMap) {
     const _root = s => (String(s || '').match(/(\d+)/) || [])[1] || '';
     const labelRe = /\[QLABEL:([^\]]+)\]/g;
@@ -6209,48 +6181,40 @@ async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, p
         labelHits.push({ pos: lm.index, end: lm.index + lm[0].length, raw, root: _root(raw), norm: normalizeLabelForMatch(raw, masterIds), used: false });
     }
 
-    // Circuit breaker for the blank-question path below: a pathological paper
-    // (many genuinely-blank low-numbered questions whose bare number happens to
-    // coincide with unrelated step-numbering elsewhere in a long transcript)
-    // could otherwise trigger a long chain of expensive full-transcript LLM
-    // relocation calls, one after another. Hard-cap it so a bad match pattern
-    // costs a handful of extra calls, never a runaway sequence.
-    let blankRescueAttempts = 0;
-    const MAX_BLANK_RESCUE_ATTEMPTS = 5;
-
     for (const q of questions) {
         const txt = q.studentText || '';
-        let verdictMismatch = false;
+        if (txt.trim().length < 10) continue; // nothing assigned, nothing to check
 
-        if (txt.trim().length < 10) {
-            // BLANK QUESTION: only worth investigating when the student's own bare
-            // number declaration (e.g. "33)") is independently found elsewhere in
-            // the transcript — real evidence they wrote something, never a guess.
-            // Restricted to SA/LA/VSA — MCQ/AR/True-False already have their own
-            // dedicated, low-risk rescue (rescueBlankMcqFromOwnLabel) and are
-            // exactly where a low single-digit number ("1)", "2)"...) is most
-            // likely to spuriously coincide with unrelated step-numbering buried
-            // in some other question's working, which is not real evidence.
-            const normType = _normQType(q.type);
-            if (normType !== 'SA' && normType !== 'LA' && normType !== 'VSA') continue;
-            if (blankRescueAttempts >= MAX_BLANK_RESCUE_ATTEMPTS) continue;
-            const myRootBlank = _root(q.questionNumber);
-            if (!myRootBlank) continue;
-            const bareDeclRe = new RegExp(`(?:^|\\n)\\s*${myRootBlank}\\)`, 'm');
-            if (!bareDeclRe.test(fullTranscript)) continue;
-            blankRescueAttempts++;
-            verdictMismatch = true;
-            console.log(`[BoundaryVerify] Q${q.questionNumber}: blank, but own bare declaration "${myRootBlank})" found elsewhere in transcript — attempting repair (${blankRescueAttempts}/${MAX_BLANK_RESCUE_ATTEMPTS})`);
-        } else {
-            try {
-                verdictMismatch = (await _boundaryMatchVerdict(q.questionNumber, q.text, txt)) === 'MISMATCH';
-            } catch (verifyErr) {
-                console.warn(`[BoundaryVerify] Q${q.questionNumber}: check call failed, skipping: ${verifyErr.message}`);
-                continue;
-            }
-            if (!verdictMismatch) continue;
-            console.log(`[BoundaryVerify] Q${q.questionNumber}: flagged as mismatch, attempting repair`);
+        let verdictMismatch = false;
+        try {
+            const checkModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            const checkResult = await callGeminiWithRetry(checkModel, {
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: `Question ${q.questionNumber} asks: "${(q.text || '').substring(0, 300)}"
+
+The text currently assigned as this question's student answer is:
+"""
+${txt.substring(0, 1000)}
+"""
+
+Does this text plausibly answer QUESTION ${q.questionNumber} specifically — or does it look like it is actually a DIFFERENT question's answer that got misassigned here (wrong topic, wrong numbers, unrelated working)?
+
+Respond with ONLY one word: MATCH or MISMATCH.`
+                    }]
+                }],
+                generationConfig: { candidateCount: 1, temperature: 0, topP: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
+            });
+            const verdict = (checkResult.response.candidates[0].content.parts[0].text || '').trim().toUpperCase();
+            verdictMismatch = verdict.includes('MISMATCH');
+        } catch (verifyErr) {
+            console.warn(`[BoundaryVerify] Q${q.questionNumber}: check call failed, skipping: ${verifyErr.message}`);
+            continue;
         }
+
+        if (!verdictMismatch) continue;
+        console.log(`[BoundaryVerify] Q${q.questionNumber}: flagged as mismatch, attempting repair`);
 
         // Free repair first: same own-label search + guarded lettered-fold as
         // recoverOrphanAnswers, reused here rather than duplicated.
@@ -6277,31 +6241,18 @@ async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, p
             }
             const recovered = fullTranscript.substring(own.end, sliceEnd).trim();
             if (recovered.length >= 10 && recovered !== txt) {
-                // Never accept a re-sliced candidate on faith — a label matching this
-                // question's number can genuinely occur more than once in a long
-                // transcript (a student re-using small numbers as their own running
-                // answer-serial elsewhere in the booklet, observed for real). Run the
-                // SAME match check the original text had to fail before accepting the
-                // replacement; on failure or an errored check, don't accept — fall
-                // through to the LLM relocation step below instead of guessing.
-                let candidateOk = false;
-                try {
-                    candidateOk = (await _boundaryMatchVerdict(q.questionNumber, q.text, recovered)) === 'MATCH';
-                } catch (candErr) {
-                    console.warn(`[BoundaryFix] Q${q.questionNumber}: candidate verification call failed — not accepting, escalating instead: ${candErr.message}`);
+                q.studentText = recovered;
+                q.requiresReview = true;
+                if (!isOR) own.used = true;
+                // Bookkeeping only — no extra AI call. Without this, the report shows
+                // the corrected text but the teacher's "jump to page" still points at
+                // the OLD (wrong) location, since page navigation reads from pageMap,
+                // not from studentText, at report time.
+                if (pageMap && pageMap.has(q._uid)) {
+                    [...recovered.matchAll(/\[#P:(\d+),\d+,\d+\]/g)].forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
                 }
-                if (candidateOk) {
-                    q.studentText = recovered;
-                    q.requiresReview = true;
-                    if (!isOR) own.used = true;
-                    if (pageMap && pageMap.has(q._uid)) {
-                        [...recovered.matchAll(/\[#P:(\d+),\d+,\d+\]/g)].forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
-                    }
-                    console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice from own label "${own.raw}" succeeded and verified`);
-                    repaired = true;
-                } else {
-                    console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice candidate from own label "${own.raw}" failed verification — escalating instead`);
-                }
+                console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice from own label "${own.raw}" succeeded`);
+                repaired = true;
             }
         }
 
@@ -6334,12 +6285,11 @@ or, if you cannot find it:
                     if (pageMap && pageMap.has(q._uid)) {
                         let recoveredTags = [...q.studentText.matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
                         if (recoveredTags.length === 0) {
-                            // The model's "copied verbatim" text sometimes strips the
-                            // coordinate tags even though the underlying content is
-                            // genuine — locate this block back in the REAL transcript by
-                            // its own text and read the page from the surrounding
-                            // original, rather than leaving the teacher's "jump to page"
-                            // with nowhere to go.
+                            // The model's "verbatim" copy sometimes drops the coordinate
+                            // tags even though the content is genuine — locate this block
+                            // back in the real transcript by its own text and read the
+                            // page from the surrounding original instead. Still no extra
+                            // Gemini call — pure string search on data already in memory.
                             const probe = q.studentText.trim().slice(0, 40);
                             const foundPos = probe.length >= 10 ? fullTranscript.indexOf(probe) : -1;
                             if (foundPos !== -1) {
@@ -6541,6 +6491,95 @@ function rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMa
 //     so every downstream step (blank-answer guards, grading, page-mapping)
 //     treats it through paths that are already tested and already shipped,
 //     rather than any new code path.
+// ── OR-PAIR MISASSIGNMENT CHECK (runs BEFORE resolveOrPairsBeforeGrading) ──
+// Root cause this addresses (confirmed on real data, Meridian School Class 10B
+// Maths, "Aitha Kruthik"): the librarian's tag-mapping call filed a student's
+// explicitly-labeled "33." answer under Q33.OR instead of Q33 — not because
+// the student mislabeled anything (a student NEVER writes "33 OR"; both
+// sibling questions get the identical bare label from the student's side),
+// but because Q33 and Q33.OR share nearly-identical topicAnchors (same skill,
+// different numbers), giving the librarian's original judgment call no real
+// signal to tell them apart. By the time resolveOrPairsBeforeGrading and the
+// grader run, only ONE side has any text at all — there is nothing left to
+// compare marks against, so a downstream fix cannot recover the mistake.
+// This only ever fires when EXACTLY ONE side of a pair has real content (the
+// overwhelmingly common real case — a student attempts one alternative, not
+// both) and checks that one chunk of text against BOTH sides' actual model
+// answers — a stronger, question-specific signal than the generic topic
+// anchors the librarian had. Deliberately AI-based, not deterministic number
+// matching, since non-numeric subjects (Science, Social Science, English)
+// have no numbers to match. Any correction it makes is always flagged for
+// review — it never silently trusts its own verdict.
+async function verifyOrPairAssignment(questions) {
+    const _root = s => (String(s || '').match(/(\d+)/) || [])[1] || '';
+    const _isOrSide = q => /alternative question \(or\)/i.test(q.checkingInstructions || '')
+        || /\.[AB]$/i.test(String(q.questionNumber || ''))
+        || /-OR$/i.test(String(q.questionNumber || ''))
+        || /\.OR$/i.test(String(q.questionNumber || ''));
+
+    const pairs = new Map(); // root -> { base, or }
+    for (const q of questions) {
+        const root = _root(q.questionNumber);
+        if (!root) continue;
+        if (!pairs.has(root)) pairs.set(root, {});
+        const slot = pairs.get(root);
+        if (_isOrSide(q)) { if (!slot.or) slot.or = q; }
+        else { if (!slot.base) slot.base = q; }
+    }
+
+    for (const [root, { base, or }] of pairs) {
+        if (!base || !or) continue; // not a real OR-pair — skip
+        const baseText = (base.studentText || '').trim();
+        const orText = (or.studentText || '').trim();
+        const baseHas = baseText.length >= 10;
+        const orHas = orText.length >= 10;
+        if (baseHas === orHas) continue; // both blank (genuinely not attempted) or both have content (existing resolver already handles this case) — leave alone
+
+        const holder = baseHas ? base : or;
+        const empty = baseHas ? or : base;
+        const holderText = baseHas ? baseText : orText;
+
+        try {
+            const model = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            const result = await callGeminiWithRetry(model, {
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: `A student wrote ONE answer for a question that has two alternative (OR) versions — they would have labeled it the same either way, so the label alone cannot tell us which version they meant.
+
+VERSION A — Question ${base.questionNumber}: "${(base.text || '').substring(0, 300)}"
+Model answer for Version A: "${(base.answer || '').substring(0, 600)}"
+
+VERSION B — Question ${or.questionNumber}: "${(or.text || '').substring(0, 300)}"
+Model answer for Version B: "${(or.answer || '').substring(0, 600)}"
+
+STUDENT'S ANSWER (currently filed under Question ${holder.questionNumber}):
+"""
+${holderText.substring(0, 1500)}
+"""
+
+Which version does this answer actually match — A or B? Judge by content (numbers, method, reasoning), not by which one it happens to be filed under. Respond with ONLY one letter: A or B.`
+                    }]
+                }],
+                generationConfig: { candidateCount: 1, temperature: 0, topP: 0, maxOutputTokens: 5, thinkingConfig: { thinkingBudget: 0 } }
+            });
+            const verdict = (result.response.candidates[0].content.parts[0].text || '').trim().toUpperCase();
+            const aiSaysBase = verdict.startsWith('A');
+            const currentlyAtBase = (holder === base);
+            if (aiSaysBase !== currentlyAtBase) {
+                console.log(`[OrPairReassign] Q${root}: content filed under Q${holder.questionNumber} actually matches Q${empty.questionNumber} — moving it, flagging for review.`);
+                empty.studentText = holderText;
+                empty.requiresReview = true;
+                holder.studentText = '';
+                holder.requiresReview = true;
+            }
+        } catch (err) {
+            console.warn(`[OrPairReassign] Q${root}: verification call failed, leaving assignment as-is: ${err.message}`);
+        }
+    }
+}
+// ── END OR-PAIR MISASSIGNMENT CHECK ─────────────────────────────────────────
+
 async function resolveOrPairsBeforeGrading(questions) {
     const _normQ = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const seen = new Set();
@@ -8061,6 +8100,10 @@ Respond with EXACTLY one word: CORRECT, INCORRECT, or UNCLEAR (if you cannot con
                 }
             }
             // ─── END INDEPENDENT MCQ/AR GRADER PASS ──────────────────────────────────────
+
+            // ─── OR-PAIR MISASSIGNMENT CHECK (fixes content filed under the wrong sibling before anything else touches it) ───
+            await verifyOrPairAssignment(questions);
+            // ─── END OR-PAIR MISASSIGNMENT CHECK ─────────────────────────────────────
 
             // ─── OR-PAIR RESOLUTION (runs before batching so both sides always land correctly regardless of which batch each falls into) ───
             await resolveOrPairsBeforeGrading(questions);
@@ -10646,6 +10689,10 @@ Then, on the following line(s), give ONLY the FULL corrected transcription, star
                 }
             }
             // ─── END OCR SELF-VERIFICATION PASS ──────────────────────────────────────────
+
+            // ─── OR-PAIR MISASSIGNMENT CHECK (fixes content filed under the wrong sibling before anything else touches it) ───
+            await verifyOrPairAssignment(questions);
+            // ─── END OR-PAIR MISASSIGNMENT CHECK ─────────────────────────────────────
 
             // ─── OR-PAIR RESOLUTION (runs before batching so both sides always land correctly regardless of which batch each falls into) ───
             await resolveOrPairsBeforeGrading(questions);
