@@ -6288,6 +6288,63 @@ or, if you cannot find it:
     }
 }
 
+// ── CROSS-PAGE CONTINUATION RESCUE (deterministic, code-only, zero LLM cost) ─
+// A student sometimes runs out of room and continues an answer elsewhere on
+// the script, and — unlike starting a fresh answer — often does NOT re-write
+// the full "Ans N" label when resuming, just a bare "N)" (or nothing at all
+// beyond the page reference itself). On an ANS-anchored paper the slicer only
+// recognizes "Ans"-prefixed labels as boundaries (by design, to avoid false
+// splits on stray numbers inside working/equations), so that bare
+// re-declaration is invisible to it and gets silently swallowed into whatever
+// OTHER "Ans"-labeled question's block happens to still be open at that point
+// in the transcript — usually the answer physically before it on the page.
+//
+// Confirmed on real data (Class XI Core Mathematics): a student wrote "Ans 19
+// ... To prove: ... Done in Page-8" then continued the actual proof on a later
+// page starting with a bare "19)" — that continuation ended up trapped inside
+// Q11's assigned text (a completely unrelated Section-A question), and Q19
+// was reported "Not attempted" / 0 marks despite the student having written a
+// complete, correct proof.
+//
+// This only ever acts when the STUDENT THEMSELVES signaled a forward/backward
+// page reference in their own answer text ("done in page 8", "continued on
+// page 5", "see page 3", "contd. pg 10", etc.) — it never goes hunting for a
+// bare number match without that explicit signal, which keeps false positives
+// low (a coincidental number in someone else's working can't trigger this
+// unless the target question's own text already contains that phrase). Always
+// flags the reclaimed question for review — this is a targeted, evidence-based
+// judgment call, not a mechanical certainty like the QLABEL-anchored rescues.
+function rescueCrossPageContinuation(questions) {
+    const _normQNum = s => (s || '').toString().trim().toLowerCase().replace(/[^0-9a-z.]/g, '');
+    const _pageRefRe = /\b(?:done|continued|contd\.?|refer(?:red)?|see)\s+(?:in|on|at)?\s*(?:page|pg)[\s.\-]*\d+/i;
+    for (const target of questions) {
+        const targetText = (target.studentText || '').trim();
+        if (!targetText || !_pageRefRe.test(targetText)) continue; // require the student's own explicit signal
+        const targetNorm = _normQNum(target.questionNumber);
+        if (!targetNorm) continue;
+        const escaped = targetNorm.replace(/\./g, '\\.');
+        // A bare re-declaration of THIS question's own number, embedded somewhere
+        // AFTER the start of another question's block (index 0 would just be that
+        // other question's own legitimate opening label, not a re-declaration).
+        const reDeclRe = new RegExp(`(?:^|\\n)\\s*${escaped}\\)\\s*(?:${escaped}\\b)?`, 'i');
+        for (const host of questions) {
+            if (host === target) continue;
+            const hostText = host.studentText || '';
+            if (!hostText) continue;
+            const m = reDeclRe.exec(hostText);
+            if (!m || m.index === 0) continue;
+            const segment = hostText.slice(m.index).trim();
+            if (segment.length < 10) continue;
+            const pageNote = (targetText.match(_pageRefRe) || [''])[0];
+            console.log(`[CrossPageRescue] Q${target.questionNumber}: reclaimed ${segment.length} chars embedded inside Q${host.questionNumber}'s block — student's own "${pageNote}" note confirmed content was elsewhere.`);
+            target.studentText = targetText + '\n' + segment;
+            target.requiresReview = true;
+            host.studentText = hostText.slice(0, m.index).trim();
+            break; // one confirmed host match per target is enough
+        }
+    }
+}
+
 // ── BLANK MCQ/AR/TF RESCUE (deterministic, code-only, zero LLM cost) ────────
 // verifyAndRepairBoundaries (above) only checks/repairs questions that already
 // have >=10 characters of assigned text — it has no path for a question that
@@ -7736,6 +7793,10 @@ questions.forEach(q => {
             // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
             await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
+
+            // ── CROSS-PAGE CONTINUATION RESCUE (student's own "done/continued on page N") ──
+            rescueCrossPageContinuation(questions);
+            // ── END CROSS-PAGE CONTINUATION RESCUE ───────────────────────────────────
 
             // ── BLANK MCQ/AR/TF RESCUE (runs only on questions with ZERO assigned text) ──
             rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap);
@@ -10373,6 +10434,10 @@ questions.forEach(q => {
             // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
             await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
+
+            // ── CROSS-PAGE CONTINUATION RESCUE (student's own "done/continued on page N") ──
+            rescueCrossPageContinuation(questions);
+            // ── END CROSS-PAGE CONTINUATION RESCUE ───────────────────────────────────
 
             // ── BLANK MCQ/AR/TF RESCUE (runs only on questions with ZERO assigned text) ──
             rescueBlankMcqFromOwnLabel(questions, fullTranscript, masterIds, pageMap);
