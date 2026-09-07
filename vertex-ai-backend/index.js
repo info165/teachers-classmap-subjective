@@ -6171,35 +6171,7 @@ Return ONLY valid JSON:
  * then, only if that fails, one targeted LLM call over the full transcript
  * to relocate the real answer. Never touches a question the check confirms.
  */
-async function _boundaryMatchVerdict(qNumber, qText, candidateText) {
-    // Shared MATCH/MISMATCH check — used both to flag a CURRENT wrongly-assigned
-    // text and, symmetrically, to verify a CANDIDATE replacement before it is
-    // accepted. Never let a candidate in without running it through this same
-    // check the original text had to pass.
-    const checkModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const checkResult = await callGeminiWithRetry(checkModel, {
-        contents: [{
-            role: 'user',
-            parts: [{
-                text: `Question ${qNumber} asks: "${(qText || '').substring(0, 300)}"
-
-Text to check:
-"""
-${candidateText.substring(0, 1000)}
-"""
-
-Does this text plausibly answer QUESTION ${qNumber} specifically — or does it look like it is actually a DIFFERENT question's answer that got misassigned here (wrong topic, wrong numbers, unrelated working)?
-
-Respond with ONLY one word: MATCH or MISMATCH.`
-            }]
-        }],
-        generationConfig: { candidateCount: 1, temperature: 0, topP: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
-    });
-    const verdict = (checkResult.response.candidates[0].content.parts[0].text || '').trim().toUpperCase();
-    return verdict.includes('MISMATCH') ? 'MISMATCH' : 'MATCH';
-}
-
-async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, pageMap) {
+async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds) {
     const _root = s => (String(s || '').match(/(\d+)/) || [])[1] || '';
     const labelRe = /\[QLABEL:([^\]]+)\]/g;
     const labelHits = [];
@@ -6211,32 +6183,38 @@ async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, p
 
     for (const q of questions) {
         const txt = q.studentText || '';
-        let verdictMismatch = false;
+        if (txt.trim().length < 10) continue; // nothing assigned, nothing to check
 
-        if (txt.trim().length < 10) {
-            // BLANK QUESTION: the existing repair machinery below (free re-slice +
-            // LLM relocation) never got a chance to run on these at all — this
-            // function used to skip them outright. Only worth investigating when
-            // the student's own bare number declaration (e.g. "33)") genuinely
-            // appears somewhere in the raw transcript — real evidence they wrote
-            // something, never a guess — otherwise leave it as genuinely not
-            // attempted, exactly as before.
-            const myRootBlank = _root(q.questionNumber);
-            if (!myRootBlank) continue;
-            const bareDeclRe = new RegExp(`(?:^|\\n)\\s*${myRootBlank}\\)`, 'm');
-            if (!bareDeclRe.test(fullTranscript)) continue;
-            verdictMismatch = true;
-            console.log(`[BoundaryVerify] Q${q.questionNumber}: blank, but own bare declaration "${myRootBlank})" found elsewhere in transcript — attempting repair`);
-        } else {
-            try {
-                verdictMismatch = (await _boundaryMatchVerdict(q.questionNumber, q.text, txt)) === 'MISMATCH';
-            } catch (verifyErr) {
-                console.warn(`[BoundaryVerify] Q${q.questionNumber}: check call failed, skipping: ${verifyErr.message}`);
-                continue;
-            }
-            if (!verdictMismatch) continue;
-            console.log(`[BoundaryVerify] Q${q.questionNumber}: flagged as mismatch, attempting repair`);
+        let verdictMismatch = false;
+        try {
+            const checkModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            const checkResult = await callGeminiWithRetry(checkModel, {
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: `Question ${q.questionNumber} asks: "${(q.text || '').substring(0, 300)}"
+
+The text currently assigned as this question's student answer is:
+"""
+${txt.substring(0, 1000)}
+"""
+
+Does this text plausibly answer QUESTION ${q.questionNumber} specifically — or does it look like it is actually a DIFFERENT question's answer that got misassigned here (wrong topic, wrong numbers, unrelated working)?
+
+Respond with ONLY one word: MATCH or MISMATCH.`
+                    }]
+                }],
+                generationConfig: { candidateCount: 1, temperature: 0, topP: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
+            });
+            const verdict = (checkResult.response.candidates[0].content.parts[0].text || '').trim().toUpperCase();
+            verdictMismatch = verdict.includes('MISMATCH');
+        } catch (verifyErr) {
+            console.warn(`[BoundaryVerify] Q${q.questionNumber}: check call failed, skipping: ${verifyErr.message}`);
+            continue;
         }
+
+        if (!verdictMismatch) continue;
+        console.log(`[BoundaryVerify] Q${q.questionNumber}: flagged as mismatch, attempting repair`);
 
         // Free repair first: same own-label search + guarded lettered-fold as
         // recoverOrphanAnswers, reused here rather than duplicated.
@@ -6263,31 +6241,11 @@ async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, p
             }
             const recovered = fullTranscript.substring(own.end, sliceEnd).trim();
             if (recovered.length >= 10 && recovered !== txt) {
-                // Never accept a re-sliced candidate on faith — a label matching this
-                // question's number can genuinely occur more than once in a long
-                // transcript (a student re-using small numbers as their own running
-                // answer-serial elsewhere in the booklet, observed for real). Run the
-                // SAME match check the original text had to fail before accepting the
-                // replacement; on failure or an errored check, don't accept — fall
-                // through to the LLM relocation step below instead of guessing.
-                let candidateOk = false;
-                try {
-                    candidateOk = (await _boundaryMatchVerdict(q.questionNumber, q.text, recovered)) === 'MATCH';
-                } catch (candErr) {
-                    console.warn(`[BoundaryFix] Q${q.questionNumber}: candidate verification call failed — not accepting, escalating instead: ${candErr.message}`);
-                }
-                if (candidateOk) {
-                    q.studentText = recovered;
-                    q.requiresReview = true;
-                    if (!isOR) own.used = true;
-                    if (pageMap && pageMap.has(q._uid)) {
-                        [...recovered.matchAll(/\[#P:(\d+),\d+,\d+\]/g)].forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
-                    }
-                    console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice from own label "${own.raw}" succeeded and verified`);
-                    repaired = true;
-                } else {
-                    console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice candidate from own label "${own.raw}" failed verification — escalating instead`);
-                }
+                q.studentText = recovered;
+                q.requiresReview = true;
+                if (!isOR) own.used = true;
+                console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice from own label "${own.raw}" succeeded`);
+                repaired = true;
             }
         }
 
@@ -6317,25 +6275,6 @@ or, if you cannot find it:
                 if (parsedFind && parsedFind.found && parsedFind.text && parsedFind.text.trim().length >= 10) {
                     q.studentText = parsedFind.text.trim();
                     q.requiresReview = true;
-                    if (pageMap && pageMap.has(q._uid)) {
-                        let recoveredTags = [...q.studentText.matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
-                        if (recoveredTags.length === 0) {
-                            // The model's "copied verbatim" text sometimes strips the
-                            // coordinate tags even though the underlying content is
-                            // genuine — locate this block back in the REAL transcript by
-                            // its own text and read the page from the surrounding original,
-                            // rather than leaving the teacher's "jump to page" with nowhere
-                            // to go.
-                            const probe = q.studentText.trim().slice(0, 40);
-                            const foundPos = probe.length >= 10 ? fullTranscript.indexOf(probe) : -1;
-                            if (foundPos !== -1) {
-                                const windowStart = Math.max(0, foundPos - 200);
-                                const windowEnd = Math.min(fullTranscript.length, foundPos + q.studentText.length + 200);
-                                recoveredTags = [...fullTranscript.slice(windowStart, windowEnd).matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
-                            }
-                        }
-                        recoveredTags.forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
-                    }
                     console.log(`[BoundaryFix] Q${q.questionNumber}: LLM relocation succeeded`);
                 } else {
                     q.requiresReview = true;
@@ -7852,7 +7791,7 @@ questions.forEach(q => {
             // Losing side hidden post-grading by computeOrLoserQNums() on the frontend.
 
             // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
-            await verifyAndRepairBoundaries(questions, fullTranscript, masterIds, pageMap);
+            await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
             // ── CROSS-PAGE CONTINUATION RESCUE (student's own "done/continued on page N") ──
@@ -10493,7 +10432,7 @@ questions.forEach(q => {
             // Losing side hidden post-grading by computeOrLoserQNums() on the frontend.
 
             // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
-            await verifyAndRepairBoundaries(questions, fullTranscript, masterIds, pageMap);
+            await verifyAndRepairBoundaries(questions, fullTranscript, masterIds);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
             // ── CROSS-PAGE CONTINUATION RESCUE (student's own "done/continued on page N") ──
