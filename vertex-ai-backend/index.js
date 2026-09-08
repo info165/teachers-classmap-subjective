@@ -467,6 +467,24 @@ function validateAndNormalizeQuestions(questions) {
 // real data — normalize once, here, so every downstream check (which still
 // checks the same canonical tokens as before) works regardless of which
 // synonym the import step happened to write.
+// Presentation-only: a question already flagged requiresReview=true carries its
+// own visible "needs manual check" indicator in the UI, so a teacher will see it
+// regardless of what the feedback text says. But specific phrasing — "Not
+// attempted" and "Topic mismatch" — reads as a confident, negative claim about
+// the student's work even when the underlying cause is a librarian/mapping
+// issue upstream, not a real absence of an answer (confirmed on real Meridian
+// School papers this session). Rather than show a claim that may well be
+// wrong, leave it blank — the review flag alone already prompts the teacher to
+// look. This changes ONLY the displayed text: marks, requiresReview, and every
+// other field are untouched.
+function _suppressNegativeFeedback(text) {
+    if (!text) return text;
+    const t = String(text);
+    if (/^\s*not attempted\.?\s*$/i.test(t)) return '';
+    if (/topic mismatch/i.test(t)) return '';
+    return t;
+}
+
 function _normQType(rawType) {
     const t = String(rawType || '').trim().toLowerCase();
     if (t === 'mcq') return 'MCQ';
@@ -9387,6 +9405,10 @@ const detailDoc = cleanUndefined({
             return {
                 ...rest,
                 studentOcrAnswer: (qr.studentOcrAnswer || '').substring(0, 800),
+                finalFeedback: _suppressNegativeFeedback(rest.finalFeedback),
+                stepWiseEvaluation: Array.isArray(rest.stepWiseEvaluation)
+                    ? rest.stepWiseEvaluation.map(s => ({ ...s, comment: _suppressNegativeFeedback(s.comment) }))
+                    : rest.stepWiseEvaluation,
             };
         }),
         fullOcrText: (reportForStudent.fullOcrText || '').substring(0, 50000),
@@ -11893,6 +11915,10 @@ const detailDoc = cleanUndefined({
             return {
                 ...rest,
                 studentOcrAnswer: (qr.studentOcrAnswer || '').substring(0, 800),
+                finalFeedback: _suppressNegativeFeedback(rest.finalFeedback),
+                stepWiseEvaluation: Array.isArray(rest.stepWiseEvaluation)
+                    ? rest.stepWiseEvaluation.map(s => ({ ...s, comment: _suppressNegativeFeedback(s.comment) }))
+                    : rest.stepWiseEvaluation,
             };
         }),
         fullOcrText: (reportForStudent.fullOcrText || '').substring(0, 50000),
