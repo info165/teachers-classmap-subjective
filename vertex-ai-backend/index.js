@@ -6285,8 +6285,16 @@ Respond with ONLY one word: MATCH or MISMATCH.`
                 // the corrected text but the teacher's "jump to page" still points at
                 // the OLD (wrong) location, since page navigation reads from pageMap,
                 // not from studentText, at report time.
+                // REPLACE, don't merge: this repair just overwrote q.studentText outright
+                // (not appended to it), so its page data must follow the same rule — a
+                // question that gets re-verified and re-sliced more than once must not
+                // accumulate pages from earlier, now-superseded attempts (confirmed on
+                // real data, Meridian School: a question ended up spanning 6 recorded
+                // pages after repeated re-slicing, and whichever was numerically smallest
+                // won navigation — sometimes a genuinely stale one, not the real page).
                 if (pageMap && pageMap.has(q._uid)) {
-                    [...recovered.matchAll(/\[#P:(\d+),\d+,\d+\]/g)].forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
+                    const newPages = [...recovered.matchAll(/\[#P:(\d+),\d+,\d+\]/g)].map(m => parseInt(m[1], 10));
+                    if (newPages.length > 0) pageMap.set(q._uid, new Set(newPages));
                 }
                 console.log(`[BoundaryFix] Q${q.questionNumber}: free re-slice from own label "${own.raw}" succeeded`);
                 repaired = true;
@@ -6335,7 +6343,11 @@ or, if you cannot find it:
                                 recoveredTags = [...fullTranscript.slice(windowStart, windowEnd).matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
                             }
                         }
-                        recoveredTags.forEach(m => pageMap.get(q._uid).add(parseInt(m[1], 10)));
+                        // REPLACE, not merge — same reasoning as the free re-slice path above:
+                        // this call just overwrote q.studentText outright, so stale pages from
+                        // an earlier, now-superseded attempt must not linger in the set.
+                        const newPages = recoveredTags.map(m => parseInt(m[1], 10));
+                        if (newPages.length > 0) pageMap.set(q._uid, new Set(newPages));
                     }
                     console.log(`[BoundaryFix] Q${q.questionNumber}: LLM relocation succeeded`);
                 } else {
