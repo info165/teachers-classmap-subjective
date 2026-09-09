@@ -485,6 +485,37 @@ function _suppressNegativeFeedback(text) {
     return t;
 }
 
+// OCR SELF-VERIFICATION SAFETY NET (2026-09-09): the verification re-read is
+// fetched using this question's tracked page number — if that page number is
+// itself wrong (a boundary-assignment bug elsewhere), the model ends up
+// re-reading a completely different part of the paper and returns text that
+// has nothing to do with the original answer. Blindly trusting that "SUBSTANTIVE
+// correction" then overwrites a genuinely correct transcript with garbage,
+// which is exactly what caused a real OR-pair (Q17.A/Q17.B) to both get marked
+// "not attempted" on a real Meridian/NTS-style paper even though the student's
+// original answer was correct and on-topic. This is a plausibility check, not a
+// correctness check — it only catches the case where the two readings share
+// almost no real words, which a genuine re-read of the SAME region essentially
+// never produces (even a real correction rephrases/fixes the SAME content).
+function _verificationLooksUnrelated(original, corrected) {
+    const _significantWords = s => new Set(
+        String(s || '')
+            .replace(/\[#P:[^\]]*\]/g, ' ')
+            .replace(/\[QLABEL:[^\]]*\]/g, ' ')
+            .toLowerCase()
+            .match(/[a-z]{4,}/g) || []
+    );
+    const a = _significantWords(original);
+    const b = _significantWords(corrected);
+    // Too short on either side to judge reliably — don't block, fall through
+    // to the existing (already-conservative) SUBSTANTIVE/COSMETIC handling.
+    if (a.size < 4 || b.size < 4) return false;
+    let shared = 0;
+    for (const w of a) if (b.has(w)) shared++;
+    const overlap = shared / Math.min(a.size, b.size);
+    return overlap < 0.15;
+}
+
 function _normQType(rawType) {
     const t = String(rawType || '').trim().toLowerCase();
     if (t === 'mcq') return 'MCQ';
@@ -6145,7 +6176,7 @@ VALID QUESTION IDs (only assign to these):
 ${JSON.stringify(finalCandidates, null, 2)}
 
 ALREADY CONFIDENTLY ASSIGNED (do NOT reassign these, they are settled):
-${JSON.stringify(resolvedContext.filter(r => r.confidence === 'high').map(r => r.id), null, 2)}
+${JSON.stringify(resolvedContext.filter(r => r.confidence === 'high' || r.confidence === 'medium').map(r => r.id), null, 2)}
 
 ORPHAN LINES (each line has a [#P:...] tag — assign each tag to a question ID):
 ${miniTranscript}
@@ -6171,6 +6202,19 @@ Example:
   Line: "2) c either 0V or +2V [#P:10,210,400]"
   → Map [#P:10,210,400] to question ID "2"
 
+EXCEPTION TO THE RULE ABOVE — check this FIRST, before applying it: if that same
+NUMBER already appears in the ALREADY CONFIDENTLY ASSIGNED list above, it CANNOT
+be this MCQ's answer — that question is already settled elsewhere with real
+content. Do NOT map to the bare number in that case. This pattern is very often
+a DIFFERENT, multi-part question's sub-answers, where the student wrote bare
+"1) / 2) / 3)" as shorthand for that question's own sub-parts (1), (2), (3)
+instead of repeating its full number (e.g. "8.1) / 8.2) / 8.3)"). When this
+happens, use the surrounding text's topic/content against the topic anchors and
+hint text of the VALID QUESTION IDs above to find the correct multi-part
+question, and assign each line to its own distinct sub-part ID of THAT question
+— never to the already-settled bare number, and never the same tag or the same
+text span to more than one question ID.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -6178,8 +6222,9 @@ RULES:
 1. Each [#P] tag must be assigned to exactly ONE question ID from the valid list above.
 2. Use topic anchors and hint text as semantic clues to identify which question the text belongs to.
 3. If a label like "(b)" or "(ii)" appears, it is a sub-part — match it to the correct parent question's sub-part ID.
-4. If a line starts with a number followed by ")" and a letter (e.g., "1) c"), ALWAYS map to that number.
-5. If truly uncertain about a tag, do NOT assign it (skip it).
+4. If a line starts with a number followed by ")" and a letter (e.g., "1) c"), map to that number — UNLESS the EXCEPTION above applies (that number is already confidently assigned), in which case route it by topic/content to the correct multi-part question's sub-part instead.
+5. When several consecutive orphan lines are separate sub-answers to different sub-part IDs of the same parent question, assign each line's tag(s) to its own distinct sub-part ID — never duplicate the same tag or the same text span across more than one question ID.
+6. If truly uncertain about a tag, do NOT assign it (skip it).
 
 Return ONLY valid JSON:
 { "mappings": [{ "id": "question_id_exactly_as_listed", "tags": ["[#P:p,y,x]"] }] }`;
@@ -8074,6 +8119,15 @@ Then, on the following line(s), give ONLY the FULL corrected transcription, star
                         console.warn(`[OCRVerify] Q${q.questionNumber}: verification response truncated (budget=${verifyOutputBudget}) — discarding, keeping original transcript`);
                     } else if (suspiciouslyShort) {
                         console.warn(`[OCRVerify] Q${q.questionNumber}: "correction" is ${verifyText.length} chars vs original ${q.studentText.length} chars — too short to trust, discarding, keeping original transcript`);
+                    } else if (verifyDifferenceClass === 'SUBSTANTIVE' && _verificationLooksUnrelated(q.studentText, verifyText)) {
+                        // The re-read shares almost no real words with the original — far more
+                        // consistent with the verification call having been fed the WRONG page
+                        // image (e.g. this question's tracked page number is itself wrong) than
+                        // with a genuine correction, which always rephrases/fixes the SAME
+                        // content and so still overlaps heavily. Discard and keep the original
+                        // transcript rather than risk overwriting a correct answer with an
+                        // unrelated re-read of some other part of the paper.
+                        console.warn(`[OCRVerify] Q${q.questionNumber}: re-read shares almost no content with the original transcript — looks like the wrong page/region was checked, discarding, keeping original transcript`);
                     } else if (verifyText && !isConfirmation && verifyText.length > 5) {
                         // Always use the more accurate corrected transcription for grading —
                         // that part is unconditional, exactly as before. Only the REVIEW FLAG
@@ -10723,6 +10777,15 @@ Then, on the following line(s), give ONLY the FULL corrected transcription, star
                         console.warn(`[OCRVerify] Q${q.questionNumber}: verification response truncated (budget=${verifyOutputBudget}) — discarding, keeping original transcript`);
                     } else if (suspiciouslyShort) {
                         console.warn(`[OCRVerify] Q${q.questionNumber}: "correction" is ${verifyText.length} chars vs original ${q.studentText.length} chars — too short to trust, discarding, keeping original transcript`);
+                    } else if (verifyDifferenceClass === 'SUBSTANTIVE' && _verificationLooksUnrelated(q.studentText, verifyText)) {
+                        // The re-read shares almost no real words with the original — far more
+                        // consistent with the verification call having been fed the WRONG page
+                        // image (e.g. this question's tracked page number is itself wrong) than
+                        // with a genuine correction, which always rephrases/fixes the SAME
+                        // content and so still overlaps heavily. Discard and keep the original
+                        // transcript rather than risk overwriting a correct answer with an
+                        // unrelated re-read of some other part of the paper.
+                        console.warn(`[OCRVerify] Q${q.questionNumber}: re-read shares almost no content with the original transcript — looks like the wrong page/region was checked, discarding, keeping original transcript`);
                     } else if (verifyText && !isConfirmation && verifyText.length > 5) {
                         // Always use the more accurate corrected transcription for grading —
                         // that part is unconditional, exactly as before. Only the REVIEW FLAG
