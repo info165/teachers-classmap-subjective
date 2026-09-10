@@ -626,6 +626,16 @@ rubric?: {
         marks: number;
         concept: string;      // Taxonomy concept ID e.g. "cm_0023"
     }>;
+    // Clean, structured per-step marks — separate from `steps` above (that field is
+    // owned by the concept-tagging pass and means something different). Populated
+    // only when every step's mark value could be read as a clean number straight
+    // from its own Excel column; otherwise omitted and the grader falls back to
+    // parsing step_marking exactly as it always has.
+    markingSteps?: Array<{
+        stepNumber: number;
+        description: string;
+        marks: number;
+    }>;
 };
 
     // ── Analytics ────────────────────────────────────────────────────────
@@ -2219,7 +2229,7 @@ function createPdfBandAnnotationHtml(report: AIQuestionReport, currentPageIndex:
 function createHumanAnnotationHtml(report: AIQuestionReport, currentPageIndex: number, qIdx: number, reportIndex: number, isPdfRender: boolean = false, sharedUsedY: number[] = []): string {
 // ON-SCREEN MARKERS (dotted line + question-number dot overlay) — DISABLED 2026-08-17.
 // Positions weren't reliably accurate and this was extra generation cost on the backend
-// for a display-only field. Single choke point: this function is called from all
+// for a display-only field. Single choke point: this function is called from all 7
 // teacher-facing report views (exam, homework, PDF export, fullscreen editor, PIP).
 // To re-enable: delete the line below. Underlying marks/feedback text (finalFeedback,
 // stepWiseEvaluation comments) are completely unaffected — only this visual dot/line is gated.
@@ -10898,23 +10908,43 @@ async function parseExcelToQuestions(file: File): Promise<AIQuestion[]> {
             : modelAns;
         const openSet = get(row, 'Open-Set Rule ①');
         let step_marking = '';
+        let markingSteps: Array<{ stepNumber: number; description: string; marks: number }> | undefined;
         if (openSet) {
             step_marking = openSet;
         } else {
             const steps: string[] = [];
+            const structuredSteps: Array<{ stepNumber: number; description: string; marks: number }> = [];
+            let allStepsHaveCleanMarks = true;
             for (let s = 1; s <= 4; s++) {
                 const desc = get(row, `Step ${s} — What`);
                 const mks  = get(row, `Step ${s} Marks`);
-                if (desc) steps.push(`Step ${s}: ${desc} (${mks || '?'})`);
+                if (desc) {
+                    steps.push(`Step ${s}: ${desc} (${mks || '?'})`);
+                    const marksNum = parseFloat(mks);
+                    if (mks && !isNaN(marksNum)) {
+                        structuredSteps.push({ stepNumber: s, description: desc, marks: marksNum });
+                    } else {
+                        allStepsHaveCleanMarks = false;
+                    }
+                }
             }
             step_marking = steps.join('; ');
+            // Only keep the structured field when EVERY step in this row had a clean,
+            // parseable mark — a partially-populated structured field (missing a mark
+            // on one step) would be worse than none at all, since it's treated as
+            // authoritative downstream. Anything less than fully clean falls back to
+            // the text-only step_marking, exactly like every question created before
+            // this field existed.
+            if (allStepsHaveCleanMarks && structuredSteps.length > 0) {
+                markingSteps = structuredSteps;
+            }
         }
         const anchorsRaw = get(row, 'Topic Anchors');
         const q: AIQuestion = {
             id: `q_excel_${Date.now()}_${qCounter++}`,
             questionNumber: get(row, 'Q No.') || String(qCounter),
             text: qText, type, marks, answer, options,
-            rubric: step_marking ? { step_marking } : undefined,
+            rubric: step_marking ? { step_marking, ...(markingSteps ? { markingSteps } : {}) } : undefined,
             topicAnchors: anchorsRaw ? anchorsRaw.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
             checkingInstructions: get(row, 'Checking Instr.') || undefined,
             imagePrompt: get(row, 'Image / Diagram') || null,
@@ -16525,7 +16555,12 @@ strictness: assessmentStudentStrictness.get(studentUid) || 'Moderate',
 
 console.log("Teacher UID for ticket:", teacherProfile!.uid);
 console.log("Auth UID:", window.firebase.auth().currentUser?.uid);
-const ticketRef = await fbFirestore.collection('gradingQueue').add(gradingTicket);
+// Hindi answer sheets route to the Sarvam-OCR production pipeline (gradingQueueHindiProd),
+// a collection entirely separate from gradingQueue — English grading is unaffected.
+const targetGradingQueue = (gradingTicket.answerLanguage || '').trim().toLowerCase() === 'hindi'
+    ? 'gradingQueueHindiProd'
+    : 'gradingQueue';
+const ticketRef = await fbFirestore.collection(targetGradingQueue).add(gradingTicket);
 
         // ── CREDIT DEDUCTION (page-accurate, done before backend starts) ──
         // expandedFiles is already computed above — PDFs split into pages, images = 1 each.
