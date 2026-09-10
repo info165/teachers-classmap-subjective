@@ -6423,63 +6423,18 @@ Respond with ONLY one word: MATCH or MISMATCH.`
             }
         }
 
-        // Escalate to one targeted LLM call only if the free re-slice didn't help.
+        // COST/LATENCY (2026-09-11): the old fallback here was one full-transcript
+        // (~40k-char) LLM relocation call per unrepaired mismatch — ~12s each, strictly
+        // sequential, and a messy paper triggers many (2-3 min total). Detection above
+        // plus the free (deterministic, own-label) re-slice are kept; only this paid
+        // "guess where it really is" call is dropped. The downstream image auditor
+        // re-locates and re-grades every answer from the source images anyway, so an
+        // unrepairable mismatch is flagged for it rather than guessed at here.
         if (!repaired) {
-            try {
-                const findModel = vertex_ai.getGenerativeModel({
-                    model: 'gemini-2.5-flash',
-                    generationConfig: { temperature: 0, responseMimeType: 'application/json' }
-                });
-                const findPrompt = `You are a document librarian. The text currently assigned to Question ${q.questionNumber} appears to be WRONG (it belongs to a different question).
-
-Question ${q.questionNumber} asks: "${(q.text || '').substring(0, 300)}"
-
-FULL TRANSCRIPT:
-${fullTranscript.substring(0, 40000)}
-
-Find the block of text in the FULL TRANSCRIPT above that is actually the student's answer to Question ${q.questionNumber}. Return ONLY valid JSON:
-{ "found": true, "text": "the exact matching block of text, copied verbatim from the transcript" }
-or, if you cannot find it:
-{ "found": false }`;
-                const findResult = await callGeminiWithRetry(findModel, {
-                    contents: [{ role: 'user', parts: [{ text: findPrompt }] }]
-                });
-                const rawFind = findResult.response.candidates[0].content.parts[0].text;
-                const parsedFind = extractJsonFromString(rawFind);
-                if (parsedFind && parsedFind.found && parsedFind.text && parsedFind.text.trim().length >= 10) {
-                    q.studentText = parsedFind.text.trim();
-                    q.requiresReview = true;
-                    if (pageMap && pageMap.has(q._uid)) {
-                        let recoveredTags = [...q.studentText.matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
-                        if (recoveredTags.length === 0) {
-                            // The model's "verbatim" copy sometimes drops the coordinate
-                            // tags even though the content is genuine — locate this block
-                            // back in the real transcript by its own text and read the
-                            // page from the surrounding original instead. Still no extra
-                            // Gemini call — pure string search on data already in memory.
-                            const probe = q.studentText.trim().slice(0, 40);
-                            const foundPos = probe.length >= 10 ? fullTranscript.indexOf(probe) : -1;
-                            if (foundPos !== -1) {
-                                const windowStart = Math.max(0, foundPos - 200);
-                                const windowEnd = Math.min(fullTranscript.length, foundPos + q.studentText.length + 200);
-                                recoveredTags = [...fullTranscript.slice(windowStart, windowEnd).matchAll(/\[#P:(\d+),\d+,\d+\]/g)];
-                            }
-                        }
-                        // REPLACE, not merge — same reasoning as the free re-slice path above:
-                        // this call just overwrote q.studentText outright, so stale pages from
-                        // an earlier, now-superseded attempt must not linger in the set.
-                        const newPages = recoveredTags.map(m => parseInt(m[1], 10));
-                        if (newPages.length > 0) pageMap.set(q._uid, new Set(newPages));
-                    }
-                    console.log(`[BoundaryFix] Q${q.questionNumber}: LLM relocation succeeded`);
-                } else {
-                    q.requiresReview = true;
-                    console.log(`[BoundaryFix] Q${q.questionNumber}: could not relocate — flagging for manual review, keeping original text`);
-                }
-            } catch (fixErr) {
-                q.requiresReview = true;
-                console.warn(`[BoundaryFix] Q${q.questionNumber}: relocation call failed, flagging for manual review: ${fixErr.message}`);
-            }
+            q.requiresReview = true;
+            q._boundaryMismatchUnresolved = true;
+            q.auditReason = q.auditReason || 'Answer placement looks wrong and could not be auto-corrected — verify against the answer sheet.';
+            console.log(`[BoundaryFix] Q${q.questionNumber}: mismatch not auto-fixable — flagged for review (LLM relocation removed 2026-09-11)`);
         }
     }
 }
@@ -8076,6 +8031,7 @@ questions.forEach(q => {
             // Losing side hidden post-grading by computeOrLoserQNums() on the frontend.
 
             // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
+            try { await snapshot.ref.update({ statusDetails: 'Verifying answer placement...' }); } catch (_) {}
             await verifyAndRepairBoundaries(questions, fullTranscript, masterIds, pageMap);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
@@ -9371,7 +9327,7 @@ if (gradedResult) {
                     ...gradedClean,
                     marksAwarded: _correctedMarksAwarded,
                     stepWiseEvaluation: _correctedStepWise,
-                    requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement || _independentDisagrees || _independentUnclear,
+                    requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement || !!originalQ._boundaryMismatchUnresolved || _independentDisagrees || _independentUnclear,
                     finalFeedback: _correctedFeedback + _ocrDisagreementNote + _independentNote,
                         studentOcrAnswer: originalQ.studentText,
                         // FIX: never use || 0 — pageIndices[0] can legitimately BE 0 (page 1)
@@ -10773,6 +10729,7 @@ questions.forEach(q => {
             // Losing side hidden post-grading by computeOrLoserQNums() on the frontend.
 
             // ── BOUNDARY VERIFICATION + REPAIR (runs on every assigned question) ────
+            try { await snapshot.ref.update({ statusDetails: 'Verifying answer placement...' }); } catch (_) {}
             await verifyAndRepairBoundaries(questions, fullTranscript, masterIds, pageMap);
             // ── END BOUNDARY VERIFICATION + REPAIR ───────────────────────────────────
 
@@ -11908,7 +11865,7 @@ if (gradedResult) {
                 }
                 return {
                     ...gradedClean,
-                    requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement,
+                    requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement || !!originalQ._boundaryMismatchUnresolved,
                     finalFeedback: _baseFeedback + _ocrDisagreementNote,
                         studentOcrAnswer: originalQ.studentText,
                         // FIX: never use || 0 — pageIndices[0] can legitimately BE 0 (page 1)
