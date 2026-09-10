@@ -2625,21 +2625,16 @@ const masterIds = jobData.questions.map(q => q.questionNumber);
     const pageResults = [];
     const HEAVY_SUBJECTS = ['physics', 'chemistry', 'biology', 'science', 'accounts', 'accountancy', 'maths', 'mathematics', 'commerce', 'economics', 'statistics'];
     const isHeavySubject = subject && HEAVY_SUBJECTS.some(s => subject.trim().toLowerCase().includes(s));
-    const BATCH_SIZE = isHeavySubject ? 2 : 4;
-    // OCR model routing: dense math/science handwriting (nested exponents, fractions, set
-    // notation) has shown Flash silently fabricating content rather than transcribing it
-    // literally (confirmed directly against source images: wrong digits substituted, entire
-    // derivations invented from a misread base term). Pro is materially more capable at this
-    // specific failure mode. Reuses the existing isHeavySubject classification (same list
-    // already driving BATCH_SIZE above) rather than a second, potentially-drifting list.
-    // Text-heavy subjects (English, Social Science, etc.) stay on Flash — unaffected, no cost
-    // change there.
-    const ocrModelName = isHeavySubject ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-    // Gemini 2.5 Pro cannot disable thinking (thinkingBudget must be >= 128; 0 is only valid
-    // on Flash and would error out every heavy-subject OCR call if left unconditional here).
-    // Use the minimum legal value for Pro — OCR is transcription, not reasoning, so there's no
-    // benefit to a larger budget, and thinking tokens bill at Pro's output rate ($10/M).
-    const ocrThinkingBudget = isHeavySubject ? 128 : 0;
+    // OCR COST/LATENCY (2026-09-11): heavy subjects used to run OCR on gemini-2.5-pro
+    // with a thinking budget and BATCH_SIZE 2 — the single most expensive and slowest
+    // part of the pipeline, and (via the "science" substring) it was also wrongly
+    // catching Social Science. Pro's advantage was on dense math handwriting where Flash
+    // can fabricate digits — that safety net now lives in the downstream image auditor,
+    // which re-reads every answer from the source images. So: Flash for everything, no
+    // thinking, larger batch. isHeavySubject is kept only for logging/future use.
+    const BATCH_SIZE = 4;
+    const ocrModelName = 'gemini-2.5-flash';
+    const ocrThinkingBudget = 0;
 
     const validNums = jobData.questions.map(q => q.questionNumber).join(', ');
     const contextualRules = `\n# CONTEXTUAL AWARENESS:\nThe valid question numbers for this exam are: ${validNums}.\nIf a handwritten digit is ambiguous, prefer a number from this list.\n`;
@@ -6335,6 +6330,20 @@ async function verifyAndRepairBoundaries(questions, fullTranscript, masterIds, p
         const txt = q.studentText || '';
         if (txt.trim().length < 10) continue; // nothing assigned, nothing to check
 
+        // COST/LATENCY GATE (2026-09-11): this was 1 LLM call per question, ~60/paper,
+        // fully sequential. This check catches GROSS cross-family misassignment (e.g. Q2
+        // ends up holding Q17's answer). Skip it when the sliced text carries a
+        // [QLABEL:...] whose leading number matches this question's own family AND
+        // nothing upstream flagged the assignment (not gap-span, not mislabel-suspected).
+        // Those are the high-confidence deterministic matches. The gap-span / positional /
+        // orphan-rescued / mislabelled ones still get the paid re-check.
+        // NOTE: within-family sub-part swaps (8.1's text under 8.2) are NOT covered by
+        // this check even when it runs — those are verified by the downstream image auditor.
+        const _selfRoot = _root(q.questionNumber);
+        const _familyLabelInText = !!_selfRoot && [...txt.matchAll(/\[QLABEL:([^\]]+)\]/g)]
+            .some(mm => _root((mm[1] || '').trim()) === _selfRoot);
+        if (_familyLabelInText && !q._gapSpanAssigned && !q._suspectedMislabel) continue;
+
         let verdictMismatch = false;
         try {
             const checkModel = vertex_ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -8100,7 +8109,15 @@ questions.forEach(q => {
             // forced to requiresReview with both readings shown (see REPORT RECONSTRUCTION
             // below), so a teacher makes the final call on any genuine disagreement. This can
             // only add review flags, never silently swap a correct grade for a wrong one.
+            // OCR SELF-VERIFICATION DISABLED (2026-09-11): this pass re-read every SA/LA
+            // answer against its page image — 1 sequential LLM call per question, each
+            // re-uploading the page image (~15-25 calls/paper, ~1 min). The downstream
+            // image auditor now does exactly this check (re-reads each answer against the
+            // source image) as part of its standard review, so keeping it here was pure
+            // duplication. To re-enable: set the flag below to true.
+            const OCR_SELF_VERIFICATION_ENABLED = false;
             for (const q of questions) {
+                if (!OCR_SELF_VERIFICATION_ENABLED) break;
                 if (!isSAorLA(q)) continue;
                 if (!q.studentText || q.studentText.trim().length < 10) continue; // nothing to verify
                 const pagesForQ = pageMap.get(q._uid) || new Set();
@@ -8228,6 +8245,23 @@ Then, on the following line(s), give ONLY the FULL corrected transcription, star
             // (see REPORT RECONSTRUCTION below), a teacher makes the final call.
             for (const q of questions) {
                 if (!isMcqOrAr(q)) continue;
+
+                // COST/LATENCY GATE (2026-09-11): this independent from-the-image re-grade
+                // was 1 sequential call per MCQ, each re-uploading the page image. Its job
+                // is to catch OCR/slicing misreads — so skip it when the sliced text
+                // ALREADY carries one clean, unambiguous option letter (e.g. "Ans 5 (b)")
+                // and is short enough to not be a mis-sliced blob. Those are exactly the
+                // cases the deterministic MCQ letter-override handles reliably on its own.
+                // Thin / garbled / blob / multi-letter text still gets the image re-grade.
+                {
+                    const _t = (q.studentText || '').replace(/\[[^\]]*\]/g, ' ').trim();
+                    const _letters = [...new Set((_t.match(/(?<![A-Za-z])[A-Da-d](?![A-Za-z])/g) || []).map(s => s.toUpperCase()))];
+                    if (_t.length >= 3 && _t.length <= 160 && _letters.length === 1) {
+                        console.log(`[IndependentGrader] Q${q.questionNumber}: skipped — clean single-letter text "${_letters[0]}" (deterministic override covers this)`);
+                        continue;
+                    }
+                }
+
                 const pagesForQ = pageMap.get(q._uid) || new Set();
                 const firstPage = Array.from(pagesForQ).sort((a, b) => a - b)[0];
                 if (!firstPage) continue;
@@ -8281,7 +8315,7 @@ Respond with EXACTLY one word: CORRECT, INCORRECT, or UNCLEAR (if you cannot con
             // ─── END OR-PAIR RESOLUTION ───────────────────────────────────────────────
 
             // ─── BATCH GRADING (UNCHANGED) ───────────────────────────────────────────
-            const MAX_BATCH_WEIGHT = 16;
+            const MAX_BATCH_WEIGHT = 24; // was 16 (2026-09-11): fewer batches → fewer re-sends of the ~7.6k-token system instruction, fewer inter-batch waits
             const questionBatches = [];
             let currentBatch = [];
             let currentWeight = 0;
@@ -8309,7 +8343,7 @@ for (const q of questions) {
 
             let questionWiseReport = [];
             for (let bIdx = 0; bIdx < questionBatches.length; bIdx++) {
-                if (bIdx > 0) await sleep(3500);
+                if (bIdx > 0) await sleep(800); // was 3500 (2026-09-11): the batch call itself already spaces requests; 3.5s was pure dead time
                 const batch = questionBatches[bIdx];
                 const batchProgress = Math.round(((bIdx + 1) / questionBatches.length) * 50);
                 await snapshot.ref.update({
@@ -10772,7 +10806,15 @@ questions.forEach(q => {
             // forced to requiresReview with both readings shown (see REPORT RECONSTRUCTION
             // below), so a teacher makes the final call on any genuine disagreement. This can
             // only add review flags, never silently swap a correct grade for a wrong one.
+            // OCR SELF-VERIFICATION DISABLED (2026-09-11): this pass re-read every SA/LA
+            // answer against its page image — 1 sequential LLM call per question, each
+            // re-uploading the page image (~15-25 calls/paper, ~1 min). The downstream
+            // image auditor now does exactly this check (re-reads each answer against the
+            // source image) as part of its standard review, so keeping it here was pure
+            // duplication. To re-enable: set the flag below to true.
+            const OCR_SELF_VERIFICATION_ENABLED = false;
             for (const q of questions) {
+                if (!OCR_SELF_VERIFICATION_ENABLED) break;
                 if (!isSAorLA(q)) continue;
                 if (!q.studentText || q.studentText.trim().length < 10) continue; // nothing to verify
                 const pagesForQ = pageMap.get(q._uid) || new Set();
@@ -10897,7 +10939,7 @@ Then, on the following line(s), give ONLY the FULL corrected transcription, star
             // ─── END OR-PAIR RESOLUTION ───────────────────────────────────────────────
 
             // ─── BATCH GRADING (UNCHANGED) ───────────────────────────────────────────
-            const MAX_BATCH_WEIGHT = 16;
+            const MAX_BATCH_WEIGHT = 24; // was 16 (2026-09-11): fewer batches → fewer re-sends of the ~7.6k-token system instruction, fewer inter-batch waits
             const questionBatches = [];
             let currentBatch = [];
             let currentWeight = 0;
@@ -10925,7 +10967,7 @@ for (const q of questions) {
 
             let questionWiseReport = [];
             for (let bIdx = 0; bIdx < questionBatches.length; bIdx++) {
-                if (bIdx > 0) await sleep(3500);
+                if (bIdx > 0) await sleep(800); // was 3500 (2026-09-11): the batch call itself already spaces requests; 3.5s was pure dead time
                 const batch = questionBatches[bIdx];
                 const batchProgress = Math.round(((bIdx + 1) / questionBatches.length) * 50);
                 await snapshot.ref.update({
