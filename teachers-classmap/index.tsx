@@ -2099,9 +2099,14 @@ window.jumpToGradingCard = (qNum: string, pageIdx: number, studentUid?: string) 
     const report = assessmentReports[reportIndex];
     const qr = report.questionWiseReport.find(q => normalizeForComparison(q.questionNumber) === normalizeForComparison(qNum));
     
-    // Use the first page in the range if available
+    // Navigate to exactly the page the summary table shows for this question
+    // (its answerPageIndex) so the clicked link and the displayed "Pg" column
+    // always land on the same page. Only fall back to the page-range start, or
+    // the value the caller passed, when answerPageIndex is missing/invalid.
     let targetPage = pageIdx;
-    if (qr && qr.answerPageIndices && qr.answerPageIndices.length > 0) {
+    if (qr && typeof qr.answerPageIndex === 'number' && qr.answerPageIndex >= 0) {
+        targetPage = qr.answerPageIndex;
+    } else if (qr && qr.answerPageIndices && qr.answerPageIndices.length > 0) {
         targetPage = qr.answerPageIndices[0];
     }
 
