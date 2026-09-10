@@ -516,6 +516,74 @@ function _verificationLooksUnrelated(original, corrected) {
     return overlap < 0.15;
 }
 
+// DETERMINISTIC PAGE LOCATOR (2026-09-10) — last-resort page finder.
+// Used ONLY when the page-tracker (pageMap) produced NOTHING for a question,
+// i.e. the current fallback would pin the answer to the last page of the paper
+// (observed on real papers: whole clusters of questions all shown as "page 13"
+// because their slice lost its [#P:N] tags). This re-locates the graded answer
+// TEXT inside the full OCR transcript and reads the [#P:N,y,x] page tag sitting
+// next to it — the one page signal that is not lost during slicing. Returns a
+// 0-based page index, or null when it cannot find the text confidently (in which
+// case the caller keeps the existing last-page fallback — never a regression:
+// there was no reliable page to begin with). Deterministic, no LLM, ~1ms.
+function _locatePageFromOcr(answerText, fullOcrText, pageCount) {
+    if (!answerText || !fullOcrText) return null;
+    const strip = s => String(s || '')
+        .replace(/\[#P:\d+,\d+,\d+\]/g, ' ')
+        .replace(/\[QLABEL:[^\]]*\]/g, ' ')
+        .replace(/\[[^\]]{1,40}\]/g, ' ')
+        .replace(/\s+/g, ' ').toLowerCase().trim();
+    const hayRaw = String(fullOcrText);
+    const full = strip(answerText);
+    const body = full.replace(/^(ans[\s.:>)\-]*)?(\([ivxlc]+\)|\(?[a-h]\)?)\s*/i, '');
+    let needle = body.slice(0, 55).trim();
+    if (needle.length < 15) needle = full.slice(0, 55).trim();
+    if (needle.length < 12) return null;
+    // Normalized haystack (bracket tags removed, whitespace collapsed, lowercased)
+    // with a parallel map back to raw-string offsets.
+    let norm = '', map = [], prevSpace = false;
+    for (let i = 0; i < hayRaw.length; i++) {
+        const ch = hayRaw[i];
+        if (ch === '[') {
+            const close = hayRaw.indexOf(']', i);
+            if (close !== -1 && close - i < 60) {
+                i = close;
+                if (!prevSpace) { norm += ' '; map.push(i); prevSpace = true; }
+                continue;
+            }
+        }
+        if (/\s/.test(ch)) {
+            if (!prevSpace) { norm += ' '; map.push(i); prevSpace = true; }
+        } else {
+            norm += ch.toLowerCase(); map.push(i); prevSpace = false;
+        }
+    }
+    const firstAt = norm.indexOf(needle);
+    if (firstAt === -1) return null;
+    const secondAt = norm.indexOf(needle, firstAt + needle.length);
+    const tags = [];
+    const re = /\[#P:(\d+),\d+,\d+\]/g;
+    let m;
+    while ((m = re.exec(hayRaw)) !== null) tags.push({ pos: m.index, page: parseInt(m[1], 10) });
+    if (tags.length === 0) return null;
+    const pageAt = rawPos => {
+        let after = null, before = null;
+        for (const t of tags) {
+            if (t.pos >= rawPos) { if (!after || t.pos < after.pos) after = t; }
+            else { if (!before || t.pos > before.pos) before = t; }
+        }
+        const pick = after || before;
+        return pick ? pick.page : null;
+    };
+    const p1 = pageAt(map[firstAt] ?? 0);
+    if (p1 == null || p1 < 1 || (pageCount && p1 > pageCount)) return null;
+    if (secondAt !== -1) {
+        const p2 = pageAt(map[secondAt] ?? 0);
+        if (p2 != null && p2 !== p1) return null; // same text on two pages — ambiguous, don't guess
+    }
+    return p1 - 1; // 0-based
+}
+
 function _normQType(rawType) {
     const t = String(rawType || '').trim().toLowerCase();
     if (t === 'mcq') return 'MCQ';
@@ -9251,6 +9319,20 @@ if (gradedResult) {
                         'No specific feedback was returned for this question — please check the answer manually.';
                     console.log(`[FeedbackFallback] Q${originalQ.questionNumber}: finalFeedback was missing from the grader response — reconstructed from step comments`);
                 }
+                // PAGE FALLBACK RESCUE: pageMap knew nothing for this question, so the
+                // line below would pin it to the LAST page of the paper (a guaranteed-
+                // wrong guess that sends teachers hunting through 20+ pages). Before
+                // that, try to find the graded answer text back in the OCR and read the
+                // page tag next to it. Only touches the empty-pageMap case — questions
+                // pageMap resolved are 100% unchanged. null result => keep last-page
+                // fallback exactly as before (no regression: there was no real page).
+                let _effPageIndices = pageIndices;
+                if (pageIndices.length === 0) {
+                    try {
+                        const _loc = _locatePageFromOcr(originalQ.studentText, fullTranscript, pagesResult.length);
+                        if (_loc != null) _effPageIndices = [_loc];
+                    } catch (_e) { /* keep fallback */ }
+                }
                 return {
                     ...gradedClean,
                     marksAwarded: _correctedMarksAwarded,
@@ -9262,8 +9344,8 @@ if (gradedResult) {
                         // and 0 || 0 = 0 which is correct by accident, but undefined || 0 = 0
                         // which silently snaps every question with empty pageIndices to page 1.
                         // Use -1 (sentinel) when no page is known — frontend hides sentinel questions.
-  answerPageIndex: pageIndices.length > 0 ? pageIndices[0] : lastPageIndex,
-                        answerPageIndices: pageIndices.length > 0 ? pageIndices : [lastPageIndex]
+  answerPageIndex: _effPageIndices.length > 0 ? _effPageIndices[0] : lastPageIndex,
+                        answerPageIndices: _effPageIndices.length > 0 ? _effPageIndices : [lastPageIndex]
                     };
                 }
 
@@ -11772,6 +11854,16 @@ if (gradedResult) {
                 const _baseFeedback = gradedClean.finalFeedback ||
                     _synthesizeFeedbackFromSteps(gradedClean.stepWiseEvaluation) ||
                     'No specific feedback was returned for this question — please check the answer manually.';
+                // PAGE FALLBACK RESCUE — see identical block in the English pipeline
+                // above. Only touches the empty-pageMap case; null => keep last-page
+                // fallback exactly as before.
+                let _effPageIndices = pageIndices;
+                if (pageIndices.length === 0) {
+                    try {
+                        const _loc = _locatePageFromOcr(originalQ.studentText, fullTranscript, pagesResult.length);
+                        if (_loc != null) _effPageIndices = [_loc];
+                    } catch (_e) { /* keep fallback */ }
+                }
                 return {
                     ...gradedClean,
                     requiresReview: gradedResult.requiresReview || !!originalQ._suspectedMislabel || !!originalQ._ocrVerificationDisagreement,
@@ -11781,8 +11873,8 @@ if (gradedResult) {
                         // and 0 || 0 = 0 which is correct by accident, but undefined || 0 = 0
                         // which silently snaps every question with empty pageIndices to page 1.
                         // Use -1 (sentinel) when no page is known — frontend hides sentinel questions.
-  answerPageIndex: pageIndices.length > 0 ? pageIndices[0] : lastPageIndex,
-                        answerPageIndices: pageIndices.length > 0 ? pageIndices : [lastPageIndex]
+  answerPageIndex: _effPageIndices.length > 0 ? _effPageIndices[0] : lastPageIndex,
+                        answerPageIndices: _effPageIndices.length > 0 ? _effPageIndices : [lastPageIndex]
                     };
                 }
 
