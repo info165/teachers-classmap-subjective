@@ -20,6 +20,8 @@ declare global {
     Cropper: any;
     MathJax: any;
     removeQuestionFromReview: (index: number) => void;
+    showTopicInsightDetail: (index: number) => void;
+    closeTopicInsightDetail: () => void;
     handleOpenRuleManager: () => Promise<void>;
     editQuestionInReview: (index: number) => void;
     saveQuestionEdit: (index: number) => void;
@@ -10210,14 +10212,53 @@ const studentLabel = (r: AIFullAssessmentReport) => {
         return pB - pA;
     });
 
+    // Per-topic student breakdown (who's struggling vs. doing fine on THIS topic specifically,
+    // not their overall score) + which question numbers/types feed into each topic — powers the
+    // click-to-expand detail view on each Topic Mastery Heatmap chip.
+    const topicStudentBreakdown: Record<string, { struggling: { name: string; scorePct: number }[]; strong: { name: string; scorePct: number }[] }> = {};
+    reports.forEach(r => {
+        const stTopics: Record<string, { got: number; max: number }> = {};
+        (r.questionWiseReport || []).forEach(qr => {
+            const t = getBestTopic(qr.questionNumber);
+            if (!t || t === 'General') return;
+            if (!stTopics[t]) stTopics[t] = { got: 0, max: 0 };
+            stTopics[t].got += qr.marksAwarded || 0;
+            stTopics[t].max += qr.maxMarksForQuestion || 0;
+        });
+        Object.entries(stTopics).forEach(([t, v]) => {
+            if (v.max <= 0) return;
+            const scorePct = Math.round(v.got / v.max * 100);
+            if (!topicStudentBreakdown[t]) topicStudentBreakdown[t] = { struggling: [], strong: [] };
+            const entry = { name: studentLabel(r), scorePct };
+            if (scorePct <= 70) topicStudentBreakdown[t].struggling.push(entry);
+            else topicStudentBreakdown[t].strong.push(entry);
+        });
+    });
+    Object.values(topicStudentBreakdown).forEach(b => {
+        b.struggling.sort((a, c) => a.scorePct - c.scorePct);
+        b.strong.sort((a, c) => c.scorePct - a.scorePct);
+    });
+
+    const topicQuestionsList: Record<string, { num: string; qType: string }[]> = {};
+    Object.entries(qMap).forEach(([num, q]) => {
+        const t = q.topic || 'General';
+        if (!topicQuestionsList[t]) topicQuestionsList[t] = [];
+        topicQuestionsList[t].push({ num, qType: q.qType });
+    });
+    Object.values(topicQuestionsList).forEach(arr => arr.sort((a, b) => naturalSort(a.num, b.num)));
+
     // ── Render helpers ──
-    const topicChip = (topic: string, d: TAgg) => {
+    const topicChip = (topic: string, d: TAgg, dataIdx: number) => {
         const sp = pct(d.zero + d.partial, d.total);
         let bg: string, border: string, dot: string, label: string;
         if (sp >= 60) { bg = '#fef2f2'; border = '#fecaca'; dot = '#dc2626'; label = 'CRITICAL'; }
         else if (sp >= 25) { bg = '#fffbeb'; border = '#fef3c7'; dot = '#d97706'; label = 'DEVELOPING'; }
         else { bg = '#f0fdf4'; border = '#bbf7d0'; dot = '#16a34a'; label = 'STRONG'; }
-        return `<div style="background:${bg};border:1.5px solid ${border};border-left:3px solid ${dot};border-radius:10px;padding:10px 12px;">
+        return `<div onclick="window.showTopicInsightDetail(${dataIdx})"
+                 title="Click for student &amp; question breakdown"
+                 style="cursor:pointer;background:${bg};border:1.5px solid ${border};border-left:3px solid ${dot};border-radius:10px;padding:10px 12px;transition:box-shadow 0.15s,transform 0.15s;"
+                 onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)';this.style.transform='translateY(-1px)';"
+                 onmouseout="this.style.boxShadow='';this.style.transform='';">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                 <div style="font-size:0.82rem;font-weight:700;color:#1a1a2e;">${topic}</div>
                 <span style="font-size:0.62rem;font-weight:700;color:${dot};background:${bg};padding:2px 7px;border-radius:4px;border:1px solid ${border};">${label}</span>
@@ -10229,6 +10270,7 @@ const studentLabel = (r: AIFullAssessmentReport) => {
             <div style="height:4px;background:#e5e7eb;border-radius:2px;margin-top:6px;">
                 <div style="height:4px;background:${dot};border-radius:2px;width:${sp}%;transition:width 0.4s;"></div>
             </div>
+            <div style="font-size:0.62rem;color:#9aa0b4;margin-top:6px;text-align:right;">Click for details →</div>
         </div>`;
     };
 
@@ -10245,9 +10287,19 @@ const studentLabel = (r: AIFullAssessmentReport) => {
             ${secTitle('01', 'Topic Mastery Heatmap', '#3949ab')}
             <p style="font-size:0.78rem;color:#888;margin-bottom:12px;">Sorted by difficulty — red = critical gap, amber = developing, green = strong.</p>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">
-                ${sortedTopics.map(([t, d]) => topicChip(t, d)).join('')}
+                ${sortedTopics.map(([t, d], i) => topicChip(t, d, i)).join('')}
             </div>
         </div>`;
+
+    // Data lookup consumed by window.showTopicInsightDetail() when a heatmap chip is clicked —
+    // indices line up 1:1 with sortedTopics above.
+    (window as any).__topicInsightData = sortedTopics.map(([t, d]) => ({
+        topic: t,
+        strugglingPct: pct(d.zero + d.partial, d.total),
+        struggling: (topicStudentBreakdown[t]?.struggling) || [],
+        strong: (topicStudentBreakdown[t]?.strong) || [],
+        questions: topicQuestionsList[t] || [],
+    }));
 
     // ── Section 2: Question breakdown ──
     const QTYPE_STYLE_MAP: Record<string, string> = {
@@ -10291,33 +10343,50 @@ const studentLabel = (r: AIFullAssessmentReport) => {
         </div>`;
 
     // ── Section 3: Students needing attention + top performers ──
-    const top5 = sortedByScore.slice(0, 5);
+    // Top Performers must ONLY include students actually above 70% — previously this just took
+    // the top 5 by rank regardless of score, so in a weak class a 30%-scoring student could show
+    // up as a "top performer" while also appearing in the "below 70%" list. Below/Top are now
+    // mutually exclusive by score, each capped at 5 with the rest tucked into a <details> dropdown.
+    const topPerformersAll = sortedByScore.filter(r => (r.maximumMarks > 0 ? (r.overallScore / r.maximumMarks) * 100 : 0) > 70);
+    const atRiskRow = (s: typeof atRisk[number]) => {
+        const sp = s.maxScore > 0 ? Math.round(s.score / s.maxScore * 100) : 0;
+        return `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="font-size:0.82rem;font-weight:700;color:#7f1d1d;">${s.name}</div>
+                <span style="font-size:0.75rem;font-weight:800;color:#dc2626;">${sp}%</span>
+            </div>
+            ${s.weakTopics.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;">${s.weakTopics.slice(0, 3).map(t => `<span style="font-size:0.62rem;background:#fee2e2;color:#dc2626;padding:1px 6px;border-radius:3px;">${t}</span>`).join('')}</div>` : ''}
+        </div>`;
+    };
+    const topPerformerRow = (r: AIFullAssessmentReport) => {
+        const sp = r.maximumMarks > 0 ? Math.round(r.overallScore / r.maximumMarks * 100) : 0;
+        return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-size:0.82rem;font-weight:700;color:#14532d;">${studentLabel(r)}</div>
+            <span style="font-size:0.75rem;font-weight:800;color:#16a34a;">${sp}%</span>
+        </div>`;
+    };
+    const dropdownMore = (n: number, html: string) => n <= 0 ? '' : `
+        <details style="margin-top:2px;">
+            <summary style="cursor:pointer;font-size:0.75rem;color:#6b7280;font-weight:600;padding:4px 2px;">Show ${n} more ▾</summary>
+            <div style="margin-top:6px;">${html}</div>
+        </details>`;
     const s3 = `
         <div style="margin-bottom:24px;">
             ${secTitle('03', 'Students Needing Attention', '#dc2626')}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
                 <div>
                     <div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#dc2626;margin-bottom:8px;">⚠ Below 70%</div>
-                    ${atRisk.slice(0, 8).map(s => {
-                        const sp = s.maxScore > 0 ? Math.round(s.score / s.maxScore * 100) : 0;
-                        return `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;margin-bottom:6px;">
-                            <div style="display:flex;justify-content:space-between;align-items:center;">
-                                <div style="font-size:0.82rem;font-weight:700;color:#7f1d1d;">${s.name}</div>
-                                <span style="font-size:0.75rem;font-weight:800;color:#dc2626;">${sp}%</span>
-                            </div>
-                            ${s.weakTopics.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;">${s.weakTopics.slice(0, 3).map(t => `<span style="font-size:0.62rem;background:#fee2e2;color:#dc2626;padding:1px 6px;border-radius:3px;">${t}</span>`).join('')}</div>` : ''}
-                        </div>`;
-                    }).join('') || '<div style="color:#aaa;font-size:0.8rem;padding:10px;">All students above 70% 🎉</div>'}
+                    ${atRisk.length === 0 ? '<div style="color:#aaa;font-size:0.8rem;padding:10px;">All students above 70% 🎉</div>' : `
+                        ${atRisk.slice(0, 5).map(atRiskRow).join('')}
+                        ${dropdownMore(atRisk.length - 5, atRisk.slice(5).map(atRiskRow).join(''))}
+                    `}
                 </div>
                 <div>
-                    <div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#16a34a;margin-bottom:8px;">🏆 Top Performers</div>
-                    ${top5.map(r => {
-                        const sp = r.maximumMarks > 0 ? Math.round(r.overallScore / r.maximumMarks * 100) : 0;
-                        return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
-                  <div style="font-size:0.82rem;font-weight:700;color:#14532d;">${studentLabel(r)}</div>
-                            <span style="font-size:0.75rem;font-weight:800;color:#16a34a;">${sp}%</span>
-                        </div>`;
-                    }).join('')}
+                    <div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#16a34a;margin-bottom:8px;">🏆 Top Performers (&gt;70%)</div>
+                    ${topPerformersAll.length === 0 ? '<div style="color:#aaa;font-size:0.8rem;padding:10px;">No students above 70% yet.</div>' : `
+                        ${topPerformersAll.slice(0, 5).map(topPerformerRow).join('')}
+                        ${dropdownMore(topPerformersAll.length - 5, topPerformersAll.slice(5).map(topPerformerRow).join(''))}
+                    `}
                 </div>
             </div>
         </div>`;
@@ -10329,16 +10398,18 @@ const studentLabel = (r: AIFullAssessmentReport) => {
             <p style="font-size:0.78rem;color:#888;margin-bottom:12px;">Topics ordered by % of students struggling. Address top items first.</p>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;">
                 ${remedialTopics.slice(0, 8).map((r, i) => {
-                    const rankColor = i < 2 ? '#dc2626' : i < 4 ? '#d97706' : '#6b7280';
+                    // Color reflects the actual % struggling, not list rank — a topic isn't
+                    // less critical just because it's 5th in the list instead of 1st.
+                    const severityColor = r.sp >= 90 ? '#dc2626' : r.sp >= 70 ? '#d97706' : '#16a34a';
                     return `<div style="border:1.5px solid #e5e7eb;border-radius:10px;padding:12px 14px;background:white;display:flex;gap:10px;align-items:flex-start;">
-                        <div style="background:${rankColor};color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:900;flex-shrink:0;">${i + 1}</div>
+                        <div style="background:${severityColor};color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:900;flex-shrink:0;">${i + 1}</div>
                         <div style="flex:1;">
                             <div style="font-size:0.82rem;font-weight:700;color:#1a237e;margin-bottom:4px;">${r.topic}</div>
                             <div style="display:flex;align-items:center;gap:6px;">
                                 <div style="height:4px;flex:1;background:#e5e7eb;border-radius:2px;">
-                                    <div style="height:4px;background:${rankColor};border-radius:2px;width:${r.sp}%;"></div>
+                                    <div style="height:4px;background:${severityColor};border-radius:2px;width:${r.sp}%;"></div>
                                 </div>
-                                <span style="font-size:0.72rem;font-weight:800;color:${rankColor};white-space:nowrap;">${r.sp}% struggling</span>
+                                <span style="font-size:0.72rem;font-weight:800;color:${severityColor};white-space:nowrap;">${r.sp}% struggling</span>
                             </div>
                         </div>
                     </div>`;
@@ -10348,6 +10419,78 @@ const studentLabel = (r: AIFullAssessmentReport) => {
 
     container.innerHTML = s1 + s2 + s3 + s4;
 }
+
+// Modal for the Topic Mastery Heatmap chip click-through: shows exactly which students are
+// struggling vs. doing fine on that topic, plus which question numbers/types feed into it.
+// Data is populated by renderLocalInsights() into window.__topicInsightData right before render.
+window.showTopicInsightDetail = (idx: number) => {
+    const data = ((window as any).__topicInsightData || [])[idx];
+    if (!data) return;
+
+    let overlay = document.getElementById('topic-insight-modal-overlay') as HTMLDivElement;
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'topic-insight-modal-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;';
+        overlay.onclick = (e) => { if (e.target === overlay) window.closeTopicInsightDetail(); };
+        document.body.appendChild(overlay);
+    }
+
+    const QTYPE_COLOR: Record<string, string> = {
+        RECALL: '#0d47a1', CONCEPTUAL: '#4527a0', NUMERICAL: '#1b5e20', DERIVATION: '#e65100',
+        DIAGRAM: '#880e4f', APPLICATION: '#004d40', ASSERTION_REASON: '#6a1b9a',
+    };
+    const qChips = (data.questions || []).map((q: any) => `
+        <span style="display:inline-flex;align-items:center;gap:6px;background:#f5f5f7;border:1px solid #e2e4ea;border-radius:6px;padding:4px 10px;margin:0 6px 6px 0;font-size:0.75rem;font-weight:700;color:#374151;">
+            Q${q.num}${q.qType ? `<span style="font-size:0.6rem;font-weight:800;color:${QTYPE_COLOR[q.qType] || '#6b7280'};">${q.qType === 'ASSERTION_REASON' ? 'ASSERT.' : q.qType}</span>` : ''}
+        </span>`).join('') || '<span style="color:#9ca3af;font-size:0.8rem;">No question data available.</span>';
+
+    const studentPill = (s: any, color: string, bg: string) =>
+        `<div style="display:flex;justify-content:space-between;background:${bg};border-radius:6px;padding:6px 10px;margin-bottom:5px;font-size:0.8rem;">
+            <span style="font-weight:600;color:#1f2937;">${s.name}</span>
+            <span style="font-weight:800;color:${color};">${s.scorePct}%</span>
+        </div>`;
+    const strugglingHtml = (data.struggling || []).length
+        ? data.struggling.map((s: any) => studentPill(s, '#dc2626', '#fef2f2')).join('')
+        : '<div style="color:#9ca3af;font-size:0.8rem;padding:6px 0;">No one is struggling here 🎉</div>';
+    const strongHtml = (data.strong || []).length
+        ? data.strong.map((s: any) => studentPill(s, '#16a34a', '#f0fdf4')).join('')
+        : '<div style="color:#9ca3af;font-size:0.8rem;padding:6px 0;">No data yet.</div>';
+
+    overlay.innerHTML = `
+        <div style="background:white;border-radius:16px;max-width:720px;width:100%;max-height:85vh;overflow-y:auto;padding:24px 26px;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:4px;">
+                <div>
+                    <div style="font-size:0.65rem;font-weight:800;letter-spacing:1px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Topic Detail</div>
+                    <div style="font-size:1.15rem;font-weight:800;color:#1a237e;">${data.topic}</div>
+                </div>
+                <button onclick="window.closeTopicInsightDetail()" style="background:#f3f4f6;border:none;border-radius:8px;width:32px;height:32px;font-size:1rem;cursor:pointer;color:#374151;flex-shrink:0;">✕</button>
+            </div>
+            <div style="font-size:0.85rem;color:#6b7280;margin-bottom:18px;">${data.strugglingPct}% of students are struggling with this topic.</div>
+
+            <div style="margin-bottom:18px;">
+                <div style="font-size:0.72rem;font-weight:800;color:#374151;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Related Questions</div>
+                <div>${qChips}</div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                <div>
+                    <div style="font-size:0.72rem;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">⚠ Struggling (${(data.struggling || []).length})</div>
+                    <div style="max-height:280px;overflow-y:auto;">${strugglingHtml}</div>
+                </div>
+                <div>
+                    <div style="font-size:0.72rem;font-weight:800;color:#16a34a;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">✔ Doing Fine (${(data.strong || []).length})</div>
+                    <div style="max-height:280px;overflow-y:auto;">${strongHtml}</div>
+                </div>
+            </div>
+        </div>`;
+    overlay.style.display = 'flex';
+};
+
+window.closeTopicInsightDetail = () => {
+    const overlay = document.getElementById('topic-insight-modal-overlay');
+    if (overlay) overlay.style.display = 'none';
+};
 
 
 function isReportUnattempted(report: AIQuestionReport): boolean {
