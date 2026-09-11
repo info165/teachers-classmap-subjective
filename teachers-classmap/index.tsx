@@ -6811,10 +6811,18 @@ textWithPlaceholders = textWithPlaceholders.replace(/^(\s*)(\d+)\./gm, '$1$2\\.'
         if (!originalMatch) return '';
 
         // FIX: Ensure delimiters are single-slashed for MathJax compatibility
-        return originalMatch.replace(/^\\+\(/, '\\(')
+        originalMatch = originalMatch.replace(/^\\+\(/, '\\(')
                             .replace(/\\+\)$/, '\\)')
                             .replace(/^\\+\[/, '\\[')
                             .replace(/\\+\]$/, '\\]');
+
+        // FIX: Escape raw HTML special chars before they're injected into the HTML string.
+        // Math like "\(9<x<16\)" contains a literal "<" immediately followed by a letter,
+        // which the browser's HTML parser reads as the start of a tag (e.g. "<x...>") once
+        // this string is set via innerHTML — silently swallowing everything up to the next
+        // ">" (which may be far downstream in unrelated markup) and corrupting the card.
+        // Escaping here is transparent to MathJax, which reads the decoded text content.
+        return originalMatch.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     });
 
     return html;
@@ -16591,7 +16599,7 @@ const ticketRef = await fbFirestore.collection(targetGradingQueue).add(gradingTi
 // Simple polling via .get() uses normal HTTPS requests — never blocked.
 
 const pollTeacherGradingJob = async () => {
-const MAX_ATTEMPTS = 120; // 120 × 5s = 10 minutes max wait
+const MAX_ATTEMPTS = 300; // 300 × 5s = 25 minutes max wait — backend now legitimately takes 10-15 min on longer papers (extra boundary-verification calls); the old 10-minute cap made the UI stop polling and freeze mid-grading even when the backend went on to finish correctly a few minutes later.
     const POLL_INTERVAL = 5000;
 
 for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
