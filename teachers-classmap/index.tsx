@@ -6828,6 +6828,16 @@ textWithPlaceholders = textWithPlaceholders.replace(/^(\s*)(\d+)\./gm, '$1$2\\.'
     return html;
 }
 // --- END: REPLACEMENT FUNCTION ---
+
+// Escapes &, <, > in raw text (e.g. LaTeX like "\(9<x<16\)") before it's inserted into a
+// normal (non-textarea) HTML element via innerHTML. Without this, a literal "<" immediately
+// followed by a letter reads as the start of an HTML tag to the browser's parser, which then
+// swallows everything up to the next unrelated ">" in the document — corrupting the card.
+// Safe for MathJax/contenteditable: the browser decodes entities back to the original
+// characters in the DOM text content, so &lt; still displays and typesets as "<".
+function escapeHtmlForInsertion(s: string | null | undefined): string {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 async function handleCopyToClipboard(textToCopy: string, btn: HTMLButtonElement) {
     if (!textToCopy) return;
     try {
@@ -21382,7 +21392,7 @@ newAnswerHtml = `<div class="qcard-answer">
                  style="cursor:text; outline:none; border-radius:4px; transition:box-shadow 0.15s;"
                  onfocus="this.style.boxShadow='0 0 0 2px #16a34a80'; this.style.background='#f0fff4';"
                  onblur="this.style.boxShadow=''; this.style.background=''; window.updateQuestionField('${type}', ${index}, 'answer', this.innerText.trim());"
-            >${q.answer}</div>
+            >${escapeHtmlForInsertion(q.answer)}</div>
         </div>`;
     } else if (q.answer && q.type === 'MCQ') {
         newAnswerHtml = mainAnswerHtml; // use existing MCQ rendering
@@ -21399,7 +21409,7 @@ newRubricHtml = `<div class="qcard-rubric">
                  style="cursor:text; outline:none; border-radius:4px; transition:box-shadow 0.15s;"
                  onfocus="this.style.boxShadow='0 0 0 2px #8e44ad80'; this.style.background='#fdf4ff';"
                  onblur="this.style.boxShadow=''; this.style.background=''; window.updateQuestionField('${type}', ${index}, 'rubric_step', this.innerText.trim());"
-            >${q.rubric.step_marking}</div>
+            >${escapeHtmlForInsertion(q.rubric.step_marking)}</div>
         </div>`;
     }
 
@@ -21437,10 +21447,10 @@ newRubricHtml = `<div class="qcard-rubric">
                          style="cursor:text; outline:none; border-radius:4px; transition:box-shadow 0.15s; white-space:pre-wrap;"
                          onfocus="this.style.boxShadow='0 0 0 2px #3b82f680'; this.style.background='#f8faff';"
                          onblur="this.style.boxShadow=''; this.style.background=''; window.updateQuestionField('${type}', ${index}, 'text', this.innerText.trim());"
->${q.text}</div>
+>${escapeHtmlForInsertion(q.text)}</div>
                     ${(q.type === 'MCQ' || q.type === 'Assertion-Reason') && q.options && q.options.length > 0 ? `
                     <div style="margin-top:8px;padding:8px 12px;background:#f0f4ff;border-radius:6px;font-size:0.9rem;line-height:2;">
-                        ${['A','B','C','D'].map((letter, idx) => `<div><strong>${letter}.</strong>&nbsp;${q.options![idx] || ''}</div>`).join('')}
+                        ${['A','B','C','D'].map((letter, idx) => `<div><strong>${letter}.</strong>&nbsp;${escapeHtmlForInsertion(q.options![idx] || '')}</div>`).join('')}
                     </div>` : ''}
                     ${subQuestionsHtml}
                     ${newAnswerHtml}
