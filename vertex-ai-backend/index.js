@@ -12503,3 +12503,14 @@ exports.extractAssessmentQuestions = onRequest(
         }
     }
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRADING ANALYTICS TRACKERS (see gradingStats.js)
+// Separate Firestore triggers that only OBSERVE writes the grader already makes and
+// record one small `gradingEvents` document per grading / failure. Not part of the
+// grading path — they cannot slow down or change grading.
+// ─────────────────────────────────────────────────────────────────────────────
+const _gradingStats = require('./gradingStats');
+exports.trackGradingEvents = _gradingStats.trackGradingEvents;
+exports.trackGradingFailures = _gradingStats.trackGradingFailures;
+exports.trackGradingFailuresHindiProd = _gradingStats.trackGradingFailuresHindiProd;
