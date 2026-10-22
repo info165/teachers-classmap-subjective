@@ -5408,6 +5408,13 @@ report.questionWiseReport.sort((a, b) => {
     }
 }
 
+// Teachers whose account is so large (e.g. 73 class rosters / 1,500+ graded submissions) that downloading the ENTIRE graded-assessment
+// history at login takes minutes. For these accounts only, skip that bulk download: class pages already fetch their own assessments live
+// (see handleLoadIndividualClassPage), so only the dashboard-wide "class performance" chart loses its assessment averages.
+const HEAVY_PRELOAD_TEACHER_UIDS: string[] = [
+    'X7QbPFI9XEhVIQEUVxD81AWJIh72', // St. Thomas School teacher
+];
+
 async function preloadTeacherData(uid: string) {
     if (isTeacherDataPreloaded) return;
     try {
@@ -5416,7 +5423,7 @@ async function preloadTeacherData(uid: string) {
         const hwIds = hws.map(hw => hw.homeworkId);
         
         const [asmtHistory, allSubs] = await Promise.all([
-            getAssessmentHistory(uid),
+            HEAVY_PRELOAD_TEACHER_UIDS.includes(uid) ? Promise.resolve([] as StoredAssessment[]) : getAssessmentHistory(uid),
             getAllSubmissionsForTeacher(hwIds)
         ]);
         
@@ -23493,7 +23500,7 @@ async function handleDownloadAllReports() {
             
 // Match @page { size: 200mm 200mm } used in individual print
             const PAGE_MM = 200;
-            const pdfDoc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [PAGE_MM, PAGE_MM] });
+            const pdfDoc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [PAGE_MM, PAGE_MM], compress: true });
             const pageW = pdfDoc.internal.pageSize.getWidth();   // 200
             const pageH = pdfDoc.internal.pageSize.getHeight();  // 200
 // Match offscreen container width exactly so absolute-positioned OSM markers render correctly
@@ -23513,7 +23520,7 @@ async function handleDownloadAllReports() {
                 await new Promise(r => requestAnimationFrame(r));
 
 const canvas = await html2canvas(pageEl as HTMLElement, {
-                    scale: 3,
+                    scale: 2,
                     useCORS: true,
                     allowTaint: true,
                     backgroundColor: '#ffffff',
@@ -23524,7 +23531,8 @@ const canvas = await html2canvas(pageEl as HTMLElement, {
 
                 if (canvas.width === 0 || canvas.height === 0) continue;
 
-const imgData = canvas.toDataURL('image/png');
+// JPEG (not PNG) + jsPDF 'FAST' compression: lossless PNG at 3x made 35+ page reports exceed the browser's max string length inside jsPDF's Array.join.
+const imgData = canvas.toDataURL('image/jpeg', 0.85);
                 const imgH = pageW * (canvas.height / canvas.width);
 
                 if (!isFirstPage) pdfDoc.addPage();
@@ -23533,7 +23541,7 @@ const imgData = canvas.toDataURL('image/png');
                 let yOffset = 0;
                 while (yOffset < imgH) {
                     if (yOffset > 0) pdfDoc.addPage();
-                    pdfDoc.addImage(imgData, 'JPEG', 0, -yOffset, pageW, imgH);
+                    pdfDoc.addImage(imgData, 'JPEG', 0, -yOffset, pageW, imgH, undefined, 'FAST');
                     yOffset += pageH;
                 }
             }
@@ -23541,6 +23549,7 @@ const imgData = canvas.toDataURL('image/png');
             if (isFirstPage) continue; // nothing was added
 
 const pdfBlob = pdfDoc.output('arraybuffer');
+            if (!pdfBlob) { console.warn(`PDF output failed for ${report.studentName}`); offscreen.innerHTML = ''; continue; }
             const fileName = `${sanitizeForFilename(report.studentName)}_${sanitizeForFilename(reportTitle)}_${sanitizeForFilename(classLabel)}_${sanitizeForFilename(subject)}.pdf`;
             zip.file(fileName, pdfBlob);
             successCount++;
