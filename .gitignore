@@ -76,3 +76,6 @@ serviceAccountKey*.json
 
 # dataconnect generated files
 .dataconnect
+outreach/config.json
+outreach/send_log.csv
+outreach/suppression.txt

@@ -1,0 +1,19 @@
+Subject: Sample explainer video for {department}: {topic}
+
+Dear {salutation},
+
+We are a small team producing short animated explainer videos in English and Hinglish. We prepared a 2-minute sample on "{topic}" that may be relevant to {department}:
+
+{video_url}
+
+The video is an AI-assisted demo for evaluation only. It has not been reviewed or endorsed by any government body, and facts and wording would be expert-reviewed before any official use.
+
+If this is of interest, we would be glad to prepare a version tailored to your programme. If a formal empanelment or EOI route exists for content partners, please point us to it.
+
+Regards,
+{sender_name}
+{sender_org}
+{sender_phone}
+
+To stop receiving emails from us, reply "unsubscribe" or visit {optout_url}.
+{sender_address}

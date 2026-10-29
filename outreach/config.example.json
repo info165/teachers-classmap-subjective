@@ -1,0 +1,7 @@
+{
+  "smtp_host": "smtp.yourdomain.in", "smtp_port": 587, "smtp_user": "outreach@yourdomain.in",
+  "smtp_password_env": "OUTREACH_SMTP_PASSWORD",
+  "sender_name": "", "sender_org": "", "sender_phone": "", "sender_address": "",
+  "optout_url": "https://yourdomain.in/unsubscribe",
+  "daily_limit": 10, "followup_after_days": 7, "max_followups": 1
+}

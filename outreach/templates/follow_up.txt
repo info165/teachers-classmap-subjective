@@ -1,0 +1,12 @@
+Subject: Re: Sample explainer video for {department}: {topic}
+
+Dear {salutation},
+
+A short follow-up to my note of {first_sent}. The sample video is here: {video_url}
+
+If this is not relevant to your office, a reply saying so (or "unsubscribe") is enough and we will not write again.
+
+Regards,
+{sender_name}
+{sender_org}
+{sender_address}
