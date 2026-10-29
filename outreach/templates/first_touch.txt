@@ -8,7 +8,7 @@ We are a small team producing short animated explainer videos in English and Hin
 
 The video is an AI-assisted demo for evaluation only. It has not been reviewed or endorsed by any government body, and facts and wording would be expert-reviewed before any official use.
 
-If this is of interest, we would be glad to prepare a version tailored to your programme. If a formal empanelment or EOI route exists for content partners, please point us to it.
+If this is of interest, we would be glad to prepare a version tailored to your programme, and I am happy to discuss it on a call at {sender_phone}. If a formal empanelment or EOI route exists for content partners, please point us to it.
 
 Regards,
 {sender_name}
