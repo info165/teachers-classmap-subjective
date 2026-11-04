@@ -5,6 +5,7 @@
 import { GoogleGenAI, GenerateContentResponse, Part, Type, Modality } from "@google/genai";
 import { marked } from 'marked';
 import type firebase from 'firebase/compat/app';
+import { initOsm, openOsmHome, closeOsm } from './src/osm/osm';
 
 
 // --- START OF CONFIGURABLE API ENDPOINTS ---
@@ -1341,6 +1342,7 @@ type FeatureFlags = {
     teacherAnalyticsHub?: boolean;
     studentPortfolioView?: boolean;
 teacherPersonalizedWorksheets?: boolean;
+    teacherManualMarking?: boolean;   // Teacher Marking (on-screen marking). Off unless explicitly enabled.
     teacherPublishing?: boolean;
     [key: string]: boolean | undefined;
 };
@@ -5136,6 +5138,7 @@ classPageHeaderEl.innerHTML = `
     
         // 2. Attach Event Listeners for buttons
         (document.getElementById('class-page-create-hw') as HTMLButtonElement).onclick = () => window.switchHomeworkTab('myq');
+        { const osmBtn = document.getElementById('class-page-open-osm') as HTMLButtonElement | null; if (osmBtn) osmBtn.onclick = () => openOsmHome(roster as any); }
         (document.getElementById('class-page-create-as') as HTMLButtonElement).onclick = () => {
         updateUIVisibility('teacher_assessment_creation_form');
         // Default to AI tab and set it up
@@ -6408,7 +6411,7 @@ async function renderPALHomePage(roster: ClassRoster) {
         .where('subject', '==', roster.subject)
         .get();
 
-    const assessments = snap.docs.map(d => ({ id: d.id, ...d.data() as CreatedAssessment }));
+    const assessments = snap.docs.filter(d => (d.data() as any).assessmentMode !== 'osm').map(d => ({ id: d.id, ...d.data() as CreatedAssessment }));
 
     if (assessments.length === 0) {
         container.innerHTML = `<p class="info-text">No graded exams found for this class yet.</p>`;
@@ -7709,7 +7712,7 @@ async function getCreatedAssessments(uid: string, classFilter?: { className: str
         .collection('assessmentHistory')
         .get();
 
-    const all = snapshot.docs.map(doc => {
+    const all = snapshot.docs.filter(doc => (doc.data() as any).assessmentMode !== 'osm').map(doc => {
         const sanitized = sanitizeCreatedAssessment(doc.data());
         sanitized.assessmentId = doc.id;
         return sanitized;
@@ -13188,6 +13191,19 @@ teacherAssessmentCreation_fromBook: [
 teacherAnalyticsHub: [document.getElementById('view-summary-analytics-btn')!],
 studentPortfolioView: [...Array.from(document.querySelectorAll<HTMLElement>('button[onclick*="handleViewStudentPortfolio"]'))]
 };
+
+    // --- Teacher Marking (OSM): additive feature, strictly opt-in per school ---
+    // When ON: show the Teacher Marking card and HIDE (not delete) Assignments + Personalized Worksheets.
+    // When OFF/absent: nothing changes for the school.
+    {
+        const osmOn = featureFlags['teacherManualMarking'] === true;
+        const osmCard = document.getElementById('class-page-osm');
+        if (osmCard) osmCard.style.display = osmOn ? '' : 'none';
+        if (osmOn) {
+            const hw = document.getElementById('class-page-homework'); if (hw) hw.style.display = 'none';
+            const ws = document.getElementById('class-page-remedial'); if (ws) ws.style.display = 'none';
+        }
+    }
 
     // --- Personalized Worksheets Card Lock ---
     // Always visible, but locked with overlay when feature is OFF
@@ -30687,6 +30703,25 @@ function applyGradingZoom() {
     if (label) label.textContent = Math.round(level * 100) + '%';
     if (slider) slider.value = String(Math.round(level * 100));
 }
+
+// ── Teacher Marking (OSM) bridge ─────────────────────────────────────────────
+// All access to this file's internals goes through this one object (evaluated lazily at call time),
+// so src/osm/osm.ts stays self-contained and the existing code paths are untouched.
+initOsm({
+    get db() { return fbFirestore; },
+    get storage() { return fbStorage; },
+    get FieldValue() { return (window as any).firebase.firestore.FieldValue; },
+    teacher: () => teacherProfile ? { uid: teacherProfile.uid, name: teacherProfile.name, schoolName: teacherProfile.schoolName, board: (teacherProfile as any).board } : null,
+    toast: (msg, type = 'info') => showFeedbackMessage(msg, type),
+    loading: (show, text) => toggleLoading(show, text),
+    parseExcel: (file) => parseExcelToQuestions(file),
+    pdfToImages: (file) => processPdfToImageFiles(file),
+    processImage: (file) => processImageFile(file),
+    fmtMath: (text) => formatMathExpressions(text),
+    typeset: (el) => typesetMathInContainer(el),
+    orLosers: (reports, questions) => computeOrLoserQNums(reports as any, questions as any),
+    backToClass: () => closeOsm(),
+} as any);
 
 // Main execution starts here
 document.addEventListener('DOMContentLoaded', initializeApp);
