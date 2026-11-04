@@ -65,3 +65,11 @@ Newest entries at the bottom. Read "DECISIONS" first, then "STATUS".
 6. Question -> page mapping does not exist (teacher scrolls). A "jump to page" per question could be added.
 7. Security (not mine): a Gemini API key is hard-coded in teachers-classmap/vite.config.ts and shipped in the bundle. Rotate it.
 8. Student app: not opened with an OSM-produced report (it reads the same studentAssessments format as always, so it should work).
+
+- 2026-11-05: Newtown preview loaded via `newtown-load.js --write`. New Auth user marking.preview@classmap.in (password in git-excluded
+  credentials-newtown.json), teachers doc "Teacher Marking Preview" (isPreviewTeacher), 3 classRosters (9A/9B/9C Science, copy of real students),
+  3 osm papers "MID - TERM EXAMINATION (Teacher Marking preview)" (54 q, 80 marks) with 39/40/42 student sheets REFERENCED by URL from the real
+  mid-term submissions (no copy, nothing deleted). school W8Ey4uxm...flag teacherManualMarking set true (was unset: see newtown-flag-before.json).
+  Verified locally: class page shows Teacher Marking, Exams count unaffected, 16/16 pages of 9A first student load.
+  BEFORE LIVE DEPLOY: flag is on for ALL Newtown teachers -> Assignments/Worksheets hidden for them as soon as the new build is live.
+  UNDO: delete teachers/{hbGbHH...} data + 3 rosters + flag (set features.teacherManualMarking false).
