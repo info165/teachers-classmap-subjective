@@ -141,7 +141,7 @@ function studentState(paper: Paper, s: StuDoc | undefined, meta: Meta, teachers:
     const sc = scoreFor(paper, s.marks);
     const contributors = new Set<string>(Object.values(s.marks || {}).map(m => m.by));
     const assigned = Object.entries(meta.assign || {}).filter(([, a]) => a?.length).map(([u]) => u);
-    const need = assigned.length ? assigned : [...contributors];
+    const need = [...new Set([...assigned, ...contributors])];
     const doneBy = Object.keys(s.done || {});
     const allMarked = sc.marked >= sc.count && sc.count > 0;
     const ready = allMarked && need.length > 0 && need.every(u => doneBy.includes(u));
@@ -261,11 +261,12 @@ async function openPaperRoster(roster: Roster, paper: Paper, teachers: { uid: st
     wireClose(el, () => openOsmHome(roster));
     const me = B.teacher()!;
     let docs = new Map<string, StuDoc>();
-    let meta: Meta = {};
+    let meta: Meta = {}; let readFailed = false;
     async function reload() {
+        readFailed = false;
         const [mSnap, ...sSnaps] = await Promise.all([
             metaRef(paper).get(),
-            ...roster.students.map((s: any) => stuRef(paper, s.uid).get().catch(() => null)),
+            ...roster.students.map((s: any) => stuRef(paper, s.uid).get().catch(() => { readFailed = true; return null; })),
         ]);
         meta = mSnap.exists ? mSnap.data() : {};
         docs = new Map();
@@ -339,7 +340,8 @@ async function openPaperRoster(roster: Roster, paper: Paper, teachers: { uid: st
             await reload(); await render();
         });
         // keep the explicit readiness flag in sync (idempotent) so analysis can find ready papers fast
-        if (allReady !== !!meta.readyForAnalysis) {
+        if (readFailed) B.toast('Some students could not be loaded — press Refresh before relying on the status.', 'error');
+        if (!readFailed && allReady !== !!meta.readyForAnalysis) {
             metaRef(paper).set({ readyForAnalysis: allReady, readyCount: readyN, sheetCount: withSheets.length, readyAt: allReady ? Date.now() : null }, { merge: true }).catch(() => { /* non-fatal */ });
         }
     }
@@ -362,10 +364,8 @@ async function uploadSheets(paper: Paper, studentUid: string, stu: any, files: F
                 pages.push({ path, url: await B.storage.ref(path).getDownloadURL() });
             }
         }
-        const ref = stuRef(paper, studentUid);
-        const cur = await ref.get();
-        const existing: any[] = cur.exists ? (cur.data().pages || []) : [];
-        await ref.set({ studentUid, studentName: stu?.name || '', rollNumber: stu?.rollNumber || '', pages: [...existing, ...pages], uploadedBy: me.uid, updatedAt: Date.now() }, { merge: true });
+        // arrayUnion: two teachers adding pages to the same student at once can never drop each other's pages
+        await stuRef(paper, studentUid).set({ studentUid, studentName: stu?.name || '', rollNumber: stu?.rollNumber || '', pages: B.FieldValue.arrayUnion(...pages), uploadedBy: me.uid, updatedAt: Date.now() }, { merge: true });
         if (!quiet) B.toast(`Uploaded ${pages.length} page(s) for ${stu?.name || 'student'}.`, 'success');
     } catch (e: any) { console.error('[osm] upload failed', e); B.toast('Upload failed: ' + e.message, 'error'); }
     finally { if (!quiet) B.loading(false); }
@@ -461,18 +461,19 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     function renderInk(i: number) {
         const svg = pageWrap[i].querySelector('svg') as SVGSVGElement; if (!svg) return;
         svg.innerHTML = Object.entries(inks).map(([tu, pg]) => (pg[String(i)] || []).map((s, si) =>
-            `<path d="${s.d}" stroke="${esc(s.c)}" stroke-width="${s.w}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${tu === me.uid ? 1 : 0.55}" data-t="${esc(tu)}" data-s="${si}"/>`).join('')).join('');
+             `<path d="${esc(s.d)}" stroke="${esc(s.c)}" stroke-width="${Number(s.w) || 3}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${tu === me.uid ? 1 : 0.55}" data-t="${esc(tu)}" data-s="${si}"/>`).join('')).join('');
         svg.style.pointerEvents = tool === 'none' ? 'none' : 'auto';
         svg.style.cursor = tool === 'pen' ? 'crosshair' : tool === 'erase' ? 'cell' : 'default';
     }
     let inkTimer: any = null; let lastInkPage = -1;
-    function saveInk() {
-        clearTimeout(inkTimer);
-        inkTimer = setTimeout(() => {
-            const mine = inks[me.uid] || {};
-            inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, updatedAt: Date.now() }).catch(e => B.toast('Could not save pen marks: ' + e.message, 'error'));
-        }, 700);
+    let inkDirty = false;
+    function flushInk() {
+        clearTimeout(inkTimer); if (!inkDirty) return; inkDirty = false;
+        const mine = inks[me.uid] || {};
+        inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, updatedAt: Date.now() }).catch(e => B.toast('Could not save pen marks: ' + e.message, 'error'));
     }
+    function saveInk() { inkDirty = true; clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 700); }
+    window.addEventListener('pagehide', flushInk);
     // drawing
     pagesEl.addEventListener('pointerdown', (ev: PointerEvent) => {
         if (tool === 'none') return;
@@ -502,7 +503,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     (async () => {
         try {
             const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
-            snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { inks[d.id.slice(7)] = d.data().pages || {}; } });
+            snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => a.d === c.d))]; }); } else inks[tu] = d.data().pages || {}; } });
             pageWrap.forEach((_, i) => renderInk(i));
         } catch (e) { console.warn('[osm] ink load', e); }
     })();
@@ -524,11 +525,19 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     el.querySelector('#t-theme')!.addEventListener('click', () => { const dk = desk.classList.toggle('dark'); try { localStorage.setItem('osm-theme', dk ? 'dark' : 'light'); } catch { /* */ } (el.querySelector('#t-theme') as HTMLElement).textContent = dk ? '☀' : '☾'; });
 
     // ---- marks panel -------------------------------------------------------
-    const saveTimers: Record<number, any> = {};
+    const saveTimers: Record<number, any> = {}; const pendingRun: Record<number, () => void> = {};
+    function flushMarks() { Object.keys(pendingRun).forEach(k => { const i = Number(k); clearTimeout(saveTimers[i]); const f = pendingRun[i]; delete pendingRun[i]; f(); }); }
     let savingCount = 0; let statusEl: HTMLElement | null = null;
     const setStatus = (t: string, cls = '') => { if (statusEl) { statusEl.textContent = t; statusEl.className = 'osm-save ' + cls; } };
     function editable(i: number) { return unlockAll || myIdx.has(i); }
     function renderSide() {
+        const prevScroll = (sideEl.querySelector('#osm-qs') as HTMLElement | null)?.scrollTop ?? 0;
+        const openDet = new Set(Array.from(sideEl.querySelectorAll<HTMLDetailsElement>('.osm-q')).filter(r => (r.querySelector('details') as HTMLDetailsElement | null)?.open).map(r => r.dataset.i));
+        renderSideInner();
+        const qs = sideEl.querySelector('#osm-qs') as HTMLElement | null; if (qs) qs.scrollTop = prevScroll;
+        openDet.forEach(i => { const d = sideEl.querySelector(`.osm-q[data-i="${i}"] details`) as HTMLDetailsElement | null; if (d) d.open = true; });
+    }
+    function renderSideInner() {
         const sc = scoreFor(paper, doc.marks);
         const st = studentState(paper, doc, meta, teachers);
         const iAmDone = !!doc.done?.[me.uid];
@@ -547,7 +556,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                   <span class="osm-max">out of ${fmt1(max)}</span></div>
                 <div class="osm-q-row">
                   <button class="osm-mini" data-act="zero" ${mine ? '' : 'disabled'} title="Give 0">0</button>
-                  <input class="osm-in" type="number" inputmode="decimal" step="0.5" min="0" max="${max}" value="${m ? m.v : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
+                  <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m ? m.v : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
                   <button class="osm-mini" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
                 </div>
                 ${m && m.by !== me.uid ? `<div class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</div>` : ''}
@@ -573,9 +582,10 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             const i = Number(inp.dataset.i);
             inp.addEventListener('input', () => { queueSave(i, inp.value, inp); });
             inp.addEventListener('keydown', e => {
-                if (e.key === 'Enter') { e.preventDefault(); const nxt = inputs.slice(inputs.indexOf(inp) + 1).find(x => !x.disabled); if (nxt) { nxt.focus(); nxt.select(); nxt.scrollIntoView({ block: 'center', behavior: 'smooth' }); } }
+                if (e.key === 'Enter') { e.preventDefault(); const nxt = inputs.slice(inputs.indexOf(inp) + 1).find(x => !x.disabled); if (nxt) { nxt.focus(); nxt.select(); nxt.scrollIntoView({ block: 'center', behavior: 'smooth' }); } else (sideEl.querySelector('#osm-given') as HTMLElement | null)?.focus(); }
             });
             inp.addEventListener('focus', () => inp.select());
+            inp.addEventListener('blur', () => { const d = doc.marks?.[qk(i)]; if (d && inp.value.trim() !== '') inp.value = String(d.v); });
         });
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-mini').forEach(b => b.addEventListener('click', () => {
             const row = b.closest('.osm-q') as HTMLElement; const i = Number(row.dataset.i); const inp = row.querySelector('.osm-in') as HTMLInputElement;
@@ -590,9 +600,10 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const run = async () => {
             const max = qMax(paper.questions[i]);
             if (raw.trim() === '') return;   // clearing a box does not delete a saved mark by accident
-            let v = Math.round(parseFloat(raw) * 2) / 2;
-            if (isNaN(v) || v < 0) v = 0; if (v > max) { v = max; B.toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
-            inp.value = String(v);
+            if (/[.,]$/.test(raw.trim())) return;   // still typing "1." — wait for the next digit
+            let v = Math.round(parseFloat(raw.replace(',', '.')) * 2) / 2;   // marks are in half-mark steps
+            if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; B.toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
+            if (document.activeElement !== inp) inp.value = String(v);
             const entry = { v, by: me.uid, n: me.name, t: Date.now() };
             (doc.marks ||= {})[qk(i)] = entry;
             // a changed mark reopens the teacher's own "Marks Given" so it is never stale
@@ -608,7 +619,9 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                 refreshScoreOnly();
             } catch (e: any) { savingCount--; setStatus('Not saved — check connection', 'bad'); B.toast('Could not save mark: ' + e.message, 'error'); }
         };
-        if (immediate) run(); else saveTimers[i] = setTimeout(run, 450);
+        pendingRun[i] = run;
+        const go = () => { delete pendingRun[i]; run(); };
+        if (immediate) { clearTimeout(saveTimers[i]); go(); } else saveTimers[i] = setTimeout(go, 600);
     }
     function renderSideKeepFocus() {
         const a = document.activeElement as HTMLInputElement | null; const i = a?.classList.contains('osm-in') ? a.dataset.i : null; const v = a?.value;
@@ -627,6 +640,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const iAmDone = !!doc.done?.[me.uid];
         if (!iAmDone) {
             const mine = paper.questions.map((_, i) => i).filter(i => hasAssign ? myIdx.has(i) : true);
+            // An unattempted alternative (OR) question needs no mark when its partner has one: it is saved as 0 for you.
+            const partnerOf = (i: number) => { const ci = String(paper.questions[i].checkingInstructions || ''); if (!/alternative question \(or\)/i.test(ci)) return -1; const m = ci.match(/with\s+question\s+([\w.\-\s()]+?)(?:\.\s|\.$|,|;|$)/i); if (!m) return -1; const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, ''); return paper.questions.findIndex(q => n(q.questionNumber || '') === n(m[1])); };
+            const autoZero = mine.filter(i => doc.marks?.[qk(i)] === undefined && partnerOf(i) >= 0 && doc.marks?.[qk(partnerOf(i))] !== undefined);
+            for (const i of autoZero) { const e = { v: 0, by: me.uid, n: me.name, t: Date.now() }; (doc.marks ||= {})[qk(i)] = e; await stuRef(paper, studentUid).set({ marks: { [qk(i)]: e }, updatedAt: Date.now() }, { merge: true }); }
+            if (autoZero.length) renderSide();
             const missing = mine.filter(i => doc.marks?.[qk(i)] === undefined);
             if (missing.length) {
                 const first = missing[0];
@@ -652,10 +670,15 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         let changed = false;
         Object.entries(d.marks || {}).forEach(([k, v]: any) => { const cur = doc.marks?.[k]; if (!cur || cur.t < v.t) { if (!(active?.classList.contains('osm-in') && qk(Number(active.dataset.i)) === k)) { (doc.marks ||= {})[k] = v; changed = true; } } });
         const nd = JSON.stringify(Object.keys(d.done || {}).sort()); if (nd !== JSON.stringify(Object.keys(doc.done || {}).sort())) { doc.done = d.done || {}; changed = true; }
-        if (changed && !active?.classList.contains('osm-in')) renderSide(); else if (changed) refreshScoreOnly();
+        if (!changed) return;
+        if (!active?.classList.contains('osm-in')) renderSide();
+        else {   // you are typing: update every OTHER box in place, never the one you are in
+            sideEl.querySelectorAll<HTMLInputElement>('.osm-in').forEach(inp => { if (inp !== active) { const m = doc.marks?.[qk(Number(inp.dataset.i))]; if (m) inp.value = String(m.v); } });
+            refreshScoreOnly();
+        }
     }, (e: any) => console.warn('[osm] live listener', e));
     stopListeners.push(unsub);
-    stopListeners.push(() => { clearTimeout(inkTimer); });
+    stopListeners.push(() => { flushInk(); window.removeEventListener('pagehide', flushInk); Object.keys(saveTimers).forEach(k => { /* pending mark saves are flushed below */ }); flushMarks(); });
 }
 
 // ───────────────────────── styles ─────────────────────────

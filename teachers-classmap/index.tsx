@@ -6487,7 +6487,7 @@ async function renderPALStudentDetailPage(studentUid: string, studentName: strin
             .where('className', '==', currentClassForView!.className)
             .where('section', '==', currentClassForView!.section)
             .where('subject', '==', currentClassForView!.subject)
-            .get(),
+            .get().then(omitOsmDocs),
         fbFirestore.collection('studentWorksheets')
             .where('studentUid', '==', studentUid)
             .get()
@@ -7702,6 +7702,13 @@ return fbFirestore.collection('completedHomeworkSubmissions')
     return allSubmissions;
 }
 
+// Teacher Marking (OSM) papers in progress are hidden from every existing exam screen.
+// (Finished ones are flipped to assessmentMode 'osm_done' and then behave as normal exams.)
+function omitOsmDocs(snap: any): any {
+    const docs = snap.docs.filter((d: any) => (d.data() as any).assessmentMode !== 'osm');
+    return { docs, empty: docs.length === 0, size: docs.length, forEach: (fn: any) => docs.forEach(fn) };
+}
+
 // REPLACE THE ENTIRE OLD getCreatedAssessments FUNCTION WITH THIS ONE:
 
 async function getCreatedAssessments(uid: string, classFilter?: { className: string, section: string, subject: string }): Promise<CreatedAssessment[]> {
@@ -7789,7 +7796,7 @@ async function getAssessmentHistory(uid: string, classFilter?: { className: stri
                      .where('subject', '==', classFilter.subject);
     }
 
-    const createdAssessmentsSnapshot = await query.get();
+    const createdAssessmentsSnapshot = omitOsmDocs(await query.get());
 
     // Step 2: For each assessment, fetch its submissions subcollection.
     const submissionPromises = createdAssessmentsSnapshot.docs.map(async (assessmentDoc) => {
@@ -17537,7 +17544,7 @@ async function fetchStudentProfileData(studentUid: string, classInfo: { classNam
         .where('section', '==', classInfo.section)
         .where('subject', '==', classInfo.subject);
 
-    const assessmentsForClassSnap = await assessmentsForClassQuery.get();
+    const assessmentsForClassSnap = omitOsmDocs(await assessmentsForClassQuery.get());
 
     // Now, for each relevant assessment, we check if this specific student has a submission.
     const submissionPromises = assessmentsForClassSnap.docs.map(async (doc) => {
@@ -17932,7 +17939,7 @@ async function handleLoadAssessmentHistory(options: any = {}) {
         }
 
 // ... REPLACE IT WITH THIS ENTIRE NEW BLOCK ...
-const snapshot = await query.get();
+const snapshot = omitOsmDocs(await query.get());
         
 // THIS IS THE FIX: We now correctly map the document ID to the assessmentId,
 // ensuring we can always find the related student submissions.
@@ -18254,7 +18261,7 @@ async function handleLoadAnalytics() {
             .where('className', '==', className)
             .where('section', '==', section)
             .where('subject', '==', subject)
-            .get();
+            .get().then(omitOsmDocs);
         const allAssessmentItems = assessmentsSnapshot.docs.map(doc => doc.data() as AssessmentHistoryItem);
 
         // --- 2. PROCESS AND STORE DATA ---
