@@ -26,8 +26,9 @@ Newest entries at the bottom. Read "DECISIONS" first, then "STATUS".
 - [~] Firestore backup -> `~/Desktop/Backups/firestore-2026-11-04/` (teachers + auditLogs still running; Firestore rules saved too)
 - [x] Seed OSM Test School (57 teachers, 48 students, 81 rosters, principal login) — credentials in `osm-test-school/credentials.json` (git-excluded)
 - [x] Teacher Marking module v1 built + working locally: `teachers-classmap/src/osm/osm.ts` (+ small hooks in index.tsx/index.html). NOT deployed anywhere.
-- [ ] Review loop (self-critique + second agent)
-- [ ] Analysis pipeline (run by Claude from chat)
+- [x] Review loop round 1: independent reviewer found 4 HIGH + 8 MEDIUM issues; all HIGH/MEDIUM fixed (commit c1380ec)
+- [x] Analysis pipeline: `osm-test-school/analysis/` export.js + finalize.js, tested end-to-end on the test school
+- [ ] DEPLOY — not done: Firebase CLI login expired and I will not push to live without you. Build is ready (`teachers-classmap/dist`).
 
 ## LOG
 - 2026-11-04: found Newtown 9E Science has 3 co-teachers, each with own exam doc; submissions stored in
@@ -44,3 +45,23 @@ Newest entries at the bottom. Read "DECISIONS" first, then "STATUS".
   Flag `teacherManualMarking` is ON only for OSM Test School; the Newtown school is untouched.
   Found: existing teacher app can't run via vite dev (marked import) -> I serve the production build via `vite preview`.
   Found (not mine, flagged): a Gemini API key is hard-coded in teachers-classmap/vite.config.ts.
+
+- 2026-11-04 (autopilot, later): full end-to-end verified on OSM Test School:
+  create paper -> upload sheets -> 2 teachers mark (parallel) -> Marks Given -> Ready for analysis ->
+  export -> feedback (validator caught a deliberately contradictory feedback) -> finalize --write --complete ->
+  paper appears as a NORMAL exam for all 3 co-teachers, existing report screen shows 12.5/15 (declared total 15, OR rule applied),
+  existing insights dashboard shows my topic heatmap, pen strokes appear in the right place in the existing grading viewer,
+  existing Verify button works (writes teacherVerifications on the shared doc). Nothing written to studentAssessments.
+- Super-admin: added toggle `teacherManualMarking` to super-admin-portal-v24/index.tsx (local edit only, not built/deployed; default OFF).
+- Backup: core collections done (teachers 31,293 docs incl. my test docs; students 6,668; classRosters 1,682; studentAssessments 7,706;
+  completedHomeworkSubmissions 1,603; schools 61 ...). ~30 small log/queue collections + auditLogs were still running in background.
+
+## KNOWN GAPS / THINGS FOR YOU TO DECIDE
+1. Not deployed anywhere. Needs `firebase login --reauth`, then a preview-channel deploy of the teacher app (I recommend a preview channel first).
+2. Paper creation is Excel-only. The "My Questions" image flow is not reused (it is deeply tied to the exam form).
+3. Dummy school only. Turning it on for Newtown = set `features.teacherManualMarking: true` in the school (super-admin toggle, once deployed).
+4. Admin dashboard has no "marking progress" screen yet; admin publishes via the existing Publish All after all 3 teachers verify.
+5. Pen: pen/eraser/undo only (colour + width). No text boxes/ticks. Existing ticks/crosses tool is only in the old viewer.
+6. Question -> page mapping does not exist (teacher scrolls). A "jump to page" per question could be added.
+7. Security (not mine): a Gemini API key is hard-coded in teachers-classmap/vite.config.ts and shipped in the bundle. Rotate it.
+8. Student app: not opened with an OSM-produced report (it reads the same studentAssessments format as always, so it should work).
