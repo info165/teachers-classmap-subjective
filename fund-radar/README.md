@@ -63,6 +63,19 @@ hasn't started at all.
   Active tenders are the most reliable "act now" signal.
 - Each state = its own portal and layout → real effort to scale; that's why WB is built first as proof.
 
+## Access — how to actually reach the gov portals
+This cloud session is the wrong machine for scraping Indian gov portals: it has a datacenter IP and
+no browser, so `finance.wb.gov.in`, `pfms.nic.in`, `cag.gov.in` and `dsel-education.gov.in` reset or
+block the connection, and faking a browser is not allowed. `wbtenders.gov.in` is reachable but needs
+a real browser (session/captcha). Better routes, in order:
+1. **Claude desktop app + connect your computer (Remote Control), or the built-in / Chrome browser.**
+   This drives *your* real browser on *your* IP, which these sites accept. It can open the budget
+   PDFs, PAB minutes and the wbtenders search (you solve any captcha). Best for reading + one-off pulls.
+2. **A small scraper on your own machine / a normal-IP server** for the daily automation.
+3. **APIs / bulk data where they exist:** data.gov.in (budget datasets, has an API), OpenBudgetsIndia
+   (downloadable CSV/XLSX). Note: NIC eProcurement (wbtenders/CPPP) and PFMS have **no open API** —
+   those need browser scraping. So the architecture is: APIs/bulk for budgets, browser for tenders.
+
 ## Status
 Source registry + design done. No scrapers written yet (can't test them while gov.in is blocked, and
 the field filter isn't defined). Next step needs: (1) domains allowed, (2) your field filter,
