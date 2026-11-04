@@ -22,6 +22,28 @@ One row per fund line found:
 You give a list of fields you can deliver (a taxonomy of keywords + synonyms per field). The
 pipeline matches each found line-item against it, so you only see opportunities in your fields.
 Example: `interactive_panels` ← "interactive panel", "IFPD", "LED touch panel", "smart board".
+See `taxonomy.md` / `taxonomy.csv` for the full field-head list; tick the rows you can deliver.
+
+## Primary output: OPEN gap (funded, NOT yet tendered)
+This is the target. A head is an **open opportunity** when:
+
+    allocated/approved (DDG, PAB, scheme release)  AND  no matching live/closed tender found
+
+So the pipeline cross-references the allocation side (budget/PAB/scheme) against the tender side
+(wbtenders, GeM, CPPP, WTL, aggregators) and surfaces the **difference**: money is there, no tender
+yet → you can approach the department before procurement. `opportunities.csv` flags these
+`fund_stage = available|incoming|requested` with `tender_found = no`.
+
+## Secondary output: fresh tenders, last 30 days (reference only)
+A separate table (`fresh_tenders.csv`) of tenders created in the last month — not to bid on (too
+late for shaping), but as a demand signal showing which fields/departments are actively buying,
+so you know where budgets are real and moving.
+
+Caveat on the gap: much school money flows as per-school grants (ICT, smart class, ATL) that
+thousands of schools spend individually, sometimes without a central tender. "Not tendered" at
+state level can still mean district/school-level buying. The cleanest open gaps are **new scheme
+heads** (PM SHRI in WB, Bengal AI Mission, AVGC labs, free-coaching content) where procurement
+hasn't started at all.
 
 ## Cadence (why per-source, not one daily sweep)
 - **Daily:** tenders (wbtenders, GeM, WTL, aggregators) + GOs (wbxpress) — these move fast.

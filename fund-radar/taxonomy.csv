@@ -1,0 +1,30 @@
+code,field_head,scheme,department_agency,indicative_fund,fit,open_check
+A1,e-content/digital resources,Samagra Shiksha ICT,DoSEL / state SSA (WB PBSSM),Rs 0.38 lakh/school recurring,3,DDG digital head + PAB ICT vs tenders
+A2,smart classroom content,Samagra Shiksha,same,Rs 2.40 lakh/school,2,PAB smart-class vs tender
+A3,ICT labs,Samagra Shiksha,same,Rs 6.40 lakh/school,1,PAB ICT list vs tenders
+A4,FLN content (NIPUN),NIPUN Bharat,NCERT/SCERT/state,,3,DDG FLN head
+A5,teacher training content (NISHTHA),Samagra Shiksha,NCERT/NIEPA/DIKSHA,,3,PAB teacher-training head
+A6,PM eVidya digital lessons,PM eVidya,DoSEL/CIET-NCERT,,3,CIET pipeline / VidyaDaan
+A7,DIKSHA/VidyaDaan content,PM eVidya,NCERT/CIET,open content call,3,VidyaDaan live calls
+A8,PM SHRI digital upgrade,PM SHRI,DoSEL,WB AWP&B Rs 2773.56 cr,2,WB newly joined - fresh/untendered
+A9,Atal Tinkering Lab content,AIM,NITI Aayog/AIM,up to Rs 20 lakh/lab,2,AIM new-lab sanction lists
+A10,madrasah smart class/e-content,state madrasah,WB Madrasah Edu,WB minority allocation cut 2026-27,2,WB DDG madrasah demand
+A11,vocational (NSQF) content,Samagra Shiksha vocational,DoSEL/PSSCIVE,,3,PAB vocational head
+A12,AVGC content-creator labs,Union Budget 2026-27,MoE,labs in 1500 schools,3,new head - likely untendered
+B1,SWAYAM/MOOC content,SWAYAM,DoHE/UGC/AICTE,,3,course-development EOIs
+B2,PM-USHA digital infra,PM-USHA,DoHE/states,RE cut 55% 2026,1,DDG PM-USHA head
+B3,tech-edu smart class/VR labs,state tech-edu,WB Dir Technical Edu,,2,DTE tenders vs allocation
+C1,PMKVY courseware,PMKVY 4.0,MSDE/NSDC,MSDE Rs 9540.5 cr BE 2026-27,3,NSDC content partner route
+C2,AI-skilling content (FutureSkills),IndiaAI Mission,MeitY/IndiaAI,IndiaAI Rs 1000 cr 2026-27,3,FutureSkills pillar - no content tender yet
+C3,Skill India Digital Hub content,Skill India Digital,MSDE/NSDC,,3,partner onboarding
+C4,ITI digital content/simulators,PM-SETU/ITI upgrade,MSDE/states,PM-SETU drove MSDE rise,2,ITI AWP vs tenders
+C5,NCS/employment content,NCS portal,Min Labour & Employment,,2,NCS content needs
+D1,free exam-coaching content,PM announcement + SATHEE,MoE/MeitY/MSDE (TBC),not officially quantified,3,watch EOI/PIB - not tendered yet
+D2,SC/OBC coaching content,MoSJE coaching,Min Social Justice,,3,scheme content tie-ups
+D3,tribal coaching/e-content,,Min Tribal Affairs/EMRS,,3,EMRS digital content
+D4,minority coaching/e-content,,Min Minority Affairs,,3,scheme lines
+E1,RPF/railway staff training content,,Min Railways/RPF,,2,confirm RPF deck permission first
+E2,police training content,,Min Home/state police/BPRD,,2,
+E3,India Post staff/fin-literacy content,,Dept of Posts,,2,
+E4,financial-literacy content,,DFS/RBI/bank CSR,,2,
+E5,online-safety/multilingual (BHASHINI),,MeitY/BHASHINI,,3,localization into Indian languages
