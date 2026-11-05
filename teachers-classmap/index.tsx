@@ -4818,7 +4818,23 @@ function handleNavigation(event: PopStateEvent) {
 
 // --- REPLACE THE OLD updateUIVisibility FUNCTION WITH THIS ENTIRE BLOCK ---
 
+// Teacher Marking: set ONLY by the Teacher Marking card's "+" button. The normal Exams "+" never sets it, so exams
+// created there are saved exactly as before (AI-graded). Reset whenever the user leaves the creation screens.
+let osmCreateMode = false;
+function setOsmCreateMode(on: boolean) {
+    osmCreateMode = on;
+    const sec = document.getElementById('teacher-assessment-creation-form-section');
+    document.getElementById('osm-create-banner')?.remove();
+    if (on && sec) {
+        const b = document.createElement('div'); b.id = 'osm-create-banner';
+        b.style.cssText = 'margin:0 0 14px;padding:12px 16px;border-radius:14px;background:linear-gradient(135deg,#2575fc,#6a11cb);color:#fff;font-weight:600;font-size:.92rem;';
+        b.textContent = '✍️ Creating a Teacher Marking paper — teachers will mark answer sheets on screen (no AI grading). It will appear in the Teacher Marking box.';
+        sec.prepend(b);
+    }
+}
+
 function updateUIVisibility(newStage: AppStage, options: any = {}, isNavigatingBack = false) {
+    if (osmCreateMode && newStage !== 'teacher_assessment_creation_form' && newStage !== 'teacher_assessment_ai_review') setOsmCreateMode(false);
     document.body.className = `stage-${newStage}`;
     const isStateUpdateOnly = currentStage === newStage && !isNavigatingBack;
 
@@ -5138,7 +5154,10 @@ classPageHeaderEl.innerHTML = `
     
         // 2. Attach Event Listeners for buttons
         (document.getElementById('class-page-create-hw') as HTMLButtonElement).onclick = () => window.switchHomeworkTab('myq');
+        { const osmPlus = document.getElementById('class-page-create-osm') as HTMLButtonElement | null;
+          if (osmPlus) osmPlus.onclick = () => { updateUIVisibility('teacher_assessment_creation_form'); setOsmCreateMode(true); setTimeout(() => window.switchAssessmentTab('myq'), 50); }; }
         (document.getElementById('class-page-create-as') as HTMLButtonElement).onclick = () => {
+        setOsmCreateMode(false);
         updateUIVisibility('teacher_assessment_creation_form');
         // Default to AI tab and set it up
           setTimeout(() => window.switchAssessmentTab('myq'), 50);
@@ -5189,11 +5208,9 @@ const createdAssessments = allCreatedAssessments;
 renderClassPageSection('assessment', roster, gradedAssessments, createdAssessments);
 
 renderInlineItemList('as', createdAssessments, 'assessment');
-// Teacher Marking (opt-in per school): papers created with the Exams "+" button show in this same box,
-// and the Total-created / Class-average tiles are hidden.
+// Teacher Marking (opt-in per school) has its OWN card; the Exams card above is untouched.
 if (featureFlags['teacherManualMarking'] === true) {
-    const st = document.querySelector('#class-page-assessment .class-page-stats') as HTMLElement | null; if (st) st.style.display = 'none';
-    try { await renderOsmExamRows(document.getElementById('class-page-as-list') as HTMLElement, roster as any); } catch (e) { console.warn('[osm] could not list papers', e); }
+    try { await renderOsmExamRows(document.getElementById('class-page-osm-list') as HTMLElement, roster as any); } catch (e) { console.warn('[osm] could not list papers', e); }
 }
         })();
         
@@ -13210,7 +13227,7 @@ studentPortfolioView: [...Array.from(document.querySelectorAll<HTMLElement>('but
     {
         const osmOn = featureFlags['teacherManualMarking'] === true;
         const osmCard = document.getElementById('class-page-osm');
-        if (osmCard) osmCard.style.display = 'none';   // retired: papers now live in the Exams box
+        if (osmCard) osmCard.style.display = osmOn ? '' : 'none';
         if (osmOn) {
             const hw = document.getElementById('class-page-homework'); if (hw) hw.style.display = 'none';
             const ws = document.getElementById('class-page-remedial'); if (ws) ws.style.display = 'none';
@@ -21289,16 +21306,24 @@ if (typeof temporaryAssessmentData.totalMarks === 'number' && temporaryAssessmen
 }
 
    // Teacher Marking (opt-in per school): the same Exams "+" form creates the paper, but it is saved as an on-screen-marking paper.
-   const osmMode = featureFlags['teacherManualMarking'] === true;
+   const osmMode = osmCreateMode && featureFlags['teacherManualMarking'] === true;
    if (osmMode) {
        if (!(typeof temporaryAssessmentData.totalMarks === 'number' && temporaryAssessmentData.totalMarks > 0)) {
            toggleLoading(false);
            showFeedbackMessage("Please enter the paper's Total Marks (on the previous screen) — Teacher Marking uses it as the paper total.", "error", true);
            return;
        }
-       if (currentClassForHomeworkCreation && await osmTitleExists(currentClassForHomeworkCreation as any, temporaryAssessmentData.assessmentTitle || '')) {
+       try {
+           // check against the class the paper is actually being saved for (the form's values)
+           const dupRoster = { id: '', teacherUid: teacherProfile.uid, schoolName: teacherProfile.schoolName, className: temporaryAssessmentData.className, section: temporaryAssessmentData.section, subject: temporaryAssessmentData.subject, stream: temporaryAssessmentData.stream || '', students: [] };
+           if (await osmTitleExists(dupRoster as any, temporaryAssessmentData.assessmentTitle || '')) {
+               toggleLoading(false);
+               showFeedbackMessage("A paper with this title already exists for this class (co-teachers share one paper). Open it from the Teacher Marking box, or use a different title.", "error", true);
+               return;
+           }
+       } catch (e) {
            toggleLoading(false);
-           showFeedbackMessage("A paper with this title already exists for this class (co-teachers share one paper). Open it from the Exams box, or use a different title.", "error", true);
+           showFeedbackMessage("Could not check for an existing paper with this title. Please check your connection and try again.", "error", true);
            return;
        }
    }
@@ -21342,7 +21367,8 @@ temporaryAssessmentData = {};
 
         temporaryAssessmentData = {};
         if (osmMode) {
-            showFeedbackMessage("Paper created. Open it from the Exams box to add each student's answer sheet and start marking.", "success");
+            setOsmCreateMode(false);
+            showFeedbackMessage("Paper created. Open it from the Teacher Marking box to add each student's answer sheet and start marking.", "success");
             if (currentClassForHomeworkCreation) updateUIVisibility('teacher_class_dashboard', { roster: currentClassForHomeworkCreation });
             else updateUIVisibility('teacher_dashboard');
             return;

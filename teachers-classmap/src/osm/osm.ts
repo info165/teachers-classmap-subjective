@@ -33,6 +33,19 @@ export interface OsmBridge {
 }
 
 let B: OsmBridge;
+// The host app's toast + loading overlay sit UNDER this full-screen UI, so Teacher Marking shows its own (always on top).
+function toast(msg: string, type: 'error' | 'success' | 'info' = 'info') {
+    let host = document.getElementById('osm-toasts');
+    if (!host) { host = document.createElement('div'); host.id = 'osm-toasts'; document.body.appendChild(host); }
+    const t = document.createElement('div'); t.className = 'osm-toast ' + type; t.textContent = msg; host.appendChild(t);
+    setTimeout(() => t.remove(), type === 'error' ? 8000 : 4500);
+}
+function busy(show: boolean, text = 'Working…') {
+    let o = document.getElementById('osm-busy');
+    if (!show) { o?.remove(); return; }
+    if (!o) { o = document.createElement('div'); o.id = 'osm-busy'; o.innerHTML = '<div class="osm-spin"></div><div class="osm-busy-t"></div>'; document.body.appendChild(o); }
+    (o.querySelector('.osm-busy-t') as HTMLElement).textContent = text;
+}
 export function initOsm(bridge: OsmBridge) { B = bridge; injectStyle(); }
 
 // ───────────────────────── types ─────────────────────────
@@ -41,7 +54,7 @@ interface Paper {
     totalMarks: number; questions: any[]; created: string; schoolName: string;
 }
 interface Roster { id: string; className: string; section: string; subject: string; stream?: string; schoolName: string; students: any[]; board?: string; teacherUid: string }
-interface StuDoc { studentUid: string; studentName: string; rollNumber: string; pages?: { url: string; path: string }[]; marks?: Record<string, { v: number; by: string; n: string; t: number }>; done?: Record<string, { n: string; t: number }>; }
+interface StuDoc { pagesVersion?: number; studentUid: string; studentName: string; rollNumber: string; pages?: { url: string; path: string }[]; marks?: Record<string, { v: number; by: string; n: string; t: number }>; done?: Record<string, { n: string; t: number }>; }
 interface Meta { assign?: Record<string, number[]>; readyForAnalysis?: boolean; }
 
 const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -92,10 +105,10 @@ async function expectedTeachers(r: Roster): Promise<{ uid: string; name: string;
     return out;
 }
 
-async function loadPapers(r: Roster, teachers: { uid: string; name: string }[]): Promise<Paper[]> {
+async function loadPapers(r: Roster, teachers: { uid: string; name: string }[], skipOwners: Set<string> = new Set()): Promise<Paper[]> {
     const all: Paper[] = [];
-    const uids = teachers.map(t => t.uid);
     const me = B.teacher()!.uid;
+    const uids = teachers.map(t => t.uid).filter(u => !skipOwners.has(u) || u === me);
     if (!uids.includes(me)) uids.push(me);
     await Promise.all(uids.map(async uid => {
         try {
@@ -152,14 +165,15 @@ function studentState(paper: Paper, s: StuDoc | undefined, meta: Meta, teachers:
 }
 
 // ───────────────────────── Exams box integration ─────────────────────────
-// Papers are created with the normal Exams "+" form (index.tsx saves them with assessmentMode:'osm').
-// They are listed in the same Exams box on the class page; opening one goes straight to the paper screen.
+// Papers are created with the Teacher Marking card's "+" (the same form as Exams; index.tsx saves them with assessmentMode:'osm').
+// They are listed in their own Teacher Marking card on the class page; opening one goes straight to the paper screen.
 const PREVIEW_EMAIL = 'marking.preview@classmap.in';
 async function visibleContext(roster: Roster) {
     const all = await expectedTeachers(roster);
     const me = B.teacher()!;
     const teachers = all.filter(t => t.email !== PREVIEW_EMAIL || t.uid === me.uid);
-    const papers = (await loadPapers(roster, all)).filter(p => me.uid === p.owner || !all.some(t => t.uid === p.owner && t.email === PREVIEW_EMAIL));
+    const skip = new Set(all.filter(t => t.email === PREVIEW_EMAIL && t.uid !== me.uid).map(t => t.uid));
+    const papers = await loadPapers(roster, all, skip);
     return { all, teachers, papers };
 }
 export async function osmTitleExists(roster: Roster, title: string): Promise<boolean> {
@@ -168,9 +182,8 @@ export async function osmTitleExists(roster: Roster, title: string): Promise<boo
 }
 export async function renderOsmExamRows(container: HTMLElement, roster: Roster) {
     const { teachers, papers } = await visibleContext(roster);
-    if (!papers.length) return;
-    container.querySelector('.cp-list-empty')?.remove();
-    container.querySelectorAll('.osm-row').forEach(n => n.remove());
+    container.innerHTML = '';
+    if (!papers.length) { container.innerHTML = '<div class="cp-list-empty">No Teacher Marking papers yet. Use + to create one.</div>'; return; }
     const frag = document.createDocumentFragment();
     papers.forEach(p => {
         const div = document.createElement('div');
@@ -204,7 +217,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
     wireClose(el);
     const me = B.teacher()!;
     let docs = new Map<string, StuDoc>();
-    let meta: Meta = {}; let readFailed = false; let busy = false;
+    let meta: Meta = {}; let readFailed = false; let busyFlag = false; let warnedRead = false;
     async function reload() {
         readFailed = false;
         const [mSnap, ...sSnaps] = await Promise.all([
@@ -258,10 +271,10 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
         body.querySelectorAll<HTMLButtonElement>('.osm-open').forEach(b => b.addEventListener('click', () => openDesk(roster, paper, teachers, b.dataset.uid!, order)));
         body.querySelectorAll<HTMLButtonElement>('.osm-up').forEach(b => b.addEventListener('click', () => {
             const stu = roster.students.find((x: any) => x.uid === b.dataset.uid);
-            openUploadModal(paper, stu, docs.get(b.dataset.uid!)?.pages?.length || 0, async () => { busy = true; try { await reload(); await render(); } finally { busy = false; } });
+            openUploadModal(paper, stu, docs.get(b.dataset.uid!)?.pages?.length || 0, async () => { busyFlag = true; try { await reload(); await render(); } finally { busyFlag = false; } });
         }));
         // keep the explicit readiness flag in sync (idempotent) so analysis can find ready papers fast
-        if (readFailed) B.toast('Some students could not be loaded — go back and open the paper again before relying on the status.', 'error');
+        if (readFailed && !warnedRead) { warnedRead = true; toast('Some students could not be loaded — go back and open the paper again before relying on the status.', 'error'); }
         if (!readFailed && allReady !== !!meta.readyForAnalysis) {
             metaRef(paper).set({ readyForAnalysis: allReady, readyCount: readyN, sheetCount: withSheets.length, readyAt: allReady ? Date.now() : null }, { merge: true }).catch(() => { /* non-fatal */ });
         }
@@ -269,7 +282,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
     try {
         await reload(); await render();
         // Keeps co-teachers' progress current without a Refresh button (paused while a dialog is open).
-        const iv = setInterval(async () => { if (busy || document.querySelector('.osm-modal') || !document.getElementById('osm-root') || document.hidden) return; busy = true; try { await reload(); await render(); } catch { /* try again next tick */ } finally { busy = false; } }, 30000);
+        const iv = setInterval(async () => { if (busyFlag || document.querySelector('.osm-modal') || !document.getElementById('osm-root') || document.hidden) return; busyFlag = true; try { await reload(); await render(); } catch { /* try again next tick */ } finally { busyFlag = false; } }, 30000);
         stopListeners.push(() => clearInterval(iv));
     }
     catch (e: any) { (el.querySelector('.osm-body') as HTMLElement).innerHTML = `<div class="osm-empty"><p>Could not load this paper.</p><p class="osm-sub">${esc(e?.message)}</p></div>`; }
@@ -316,32 +329,37 @@ function openUploadModal(paper: Paper, stu: any, existing: number, onDone: () =>
 //   gradedReports/{teacherUid}/{paperId}/{studentUid}/{time}_{filename}   (PDF pages are already enhanced, photos are processed)
 async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | 'replace') {
     const me = B.teacher()!; const studentUid = stu?.uid;
-    B.loading(true, 'Preparing pages…');
+    busy(true, 'Preparing pages…');
     try {
         const expanded: File[] = [];
         for (const f of files) { if (f.type === 'application/pdf') expanded.push(...await B.pdfToImages(f)); else expanded.push(f); }
         let n = 0;
         const pages = await Promise.all(expanded.map(async (img, idx) => {
             const up = img.name.includes('_page_') ? img : await B.processImage(img).catch(() => img);
-            const path = `gradedReports/${me.uid}/${paper.id}/${studentUid}/${img.lastModified || Date.now()}_${idx}_${img.name.replace(/[^\w.\-]/g, '_')}`;
+            const path = `gradedReports/${me.uid}/${paper.id}/${studentUid}/${img.lastModified || Date.now()}_${Date.now().toString(36)}${idx}_${img.name.replace(/[^\w.\-]/g, '_')}`;
             await B.storage.ref(path).put(up);
             const url = await B.storage.ref(path).getDownloadURL();
-            B.loading(true, `Uploading page ${++n} of ${expanded.length}…`);
+            busy(true, `Uploading page ${++n} of ${expanded.length}…`);
             return { path, url };
         }));
         const base = { studentUid, studentName: stu?.name || '', rollNumber: stu?.rollNumber || '', uploadedBy: me.uid, updatedAt: Date.now() };
         if (mode === 'replace') {
-            await stuRef(paper, studentUid).set({ ...base, pages }, { merge: true });
-            // pen strokes were drawn on the old pages — remove them so they cannot land on the wrong page
-            const det = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
-            await Promise.all(det.docs.filter((d: any) => d.id.startsWith('osmInk_')).map((d: any) => d.ref.delete()));
+            // pen strokes were drawn on the old pages — remove them first so they cannot land on the new pages.
+            // pagesVersion also makes any ink saved later from an already-open desk (old pages) be ignored on load.
+            let inkNote = '';
+            try {
+                const det = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
+                await Promise.all(det.docs.filter((d: any) => d.id.startsWith('osmInk_')).map((d: any) => d.ref.delete()));
+            } catch (e: any) { inkNote = ' Old pen marks could not be deleted, but they will be ignored.'; console.warn('[osm] ink cleanup', e); }
+            await stuRef(paper, studentUid).set({ ...base, pages, pagesVersion: Date.now() }, { merge: true });
+            if (inkNote) toast(inkNote.trim(), 'info');
         } else {
             // arrayUnion: two teachers adding pages to the same student at once can never drop each other's pages
             await stuRef(paper, studentUid).set({ ...base, pages: B.FieldValue.arrayUnion(...pages) }, { merge: true });
         }
-        B.toast(mode === 'replace' ? `Sheet replaced (${pages.length} page${pages.length > 1 ? 's' : ''}).` : `Added ${pages.length} page${pages.length > 1 ? 's' : ''} for ${stu?.name || 'student'}.`, 'success');
-    } catch (e: any) { console.error('[osm] upload failed', e); B.toast('Upload failed: ' + e.message, 'error'); }
-    finally { B.loading(false); }
+        toast(mode === 'replace' ? `Sheet replaced (${pages.length} page${pages.length > 1 ? 's' : ''}).` : `Added ${pages.length} page${pages.length > 1 ? 's' : ''} for ${stu?.name || 'student'}.`, 'success');
+    } catch (e: any) { console.error('[osm] upload failed', e); toast('Upload failed: ' + e.message, 'error'); }
+    finally { busy(false); }
 }
 
 function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: number[]) => Promise<void>) {
@@ -365,7 +383,7 @@ function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: n
     m.querySelector('#osm-m-cancel')!.addEventListener('click', () => m.remove());
     m.querySelector('#osm-m-save')!.addEventListener('click', async () => {
         const list = boxes().filter(c => c.checked).map(c => Number(c.dataset.i));
-        try { await onSave(list); m.remove(); B.toast('Saved.', 'success'); } catch (e: any) { B.toast('Could not save: ' + e.message, 'error'); }
+        try { await onSave(list); m.remove(); toast('Saved.', 'success'); } catch (e: any) { toast('Could not save: ' + e.message, 'error'); }
     });
 }
 
@@ -444,24 +462,33 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         svg.style.cursor = tool === 'pen' ? 'crosshair' : tool === 'erase' ? 'cell' : 'default';
     }
     let inkTimer: any = null; let lastInkPage = -1;
-    let inkDirty = false; let inkSaving = 0;
+    let inkDirty = false; let inkSaving = 0; let alive = true; let inkLoaded = false; let inkFails = 0;
     const myStrokeCount = () => Object.values(inks[me.uid] || {}).reduce((a, arr: any) => a + arr.length, 0);
     function setInkStatus(kind: 'idle' | 'dirty' | 'saving' | 'saved' | 'error') {
-        const e = el.querySelector('#osm-ink-status') as HTMLElement | null; if (!e) return;
+        if (!alive) return;
+        const e = desk.querySelector('#osm-ink-status') as HTMLElement | null; if (!e) return;
         const n = myStrokeCount();
         e.className = 'osm-inkstat ' + kind;
         e.textContent = kind === 'saving' ? '⏳ Saving pen marks…' : kind === 'dirty' ? '● Pen marks not saved yet' : kind === 'error' ? '⚠ Pen marks NOT saved — retrying' : kind === 'saved' ? `✓ Pen marks saved (${n})` : (n ? `✓ ${n} pen mark${n > 1 ? 's' : ''} saved` : 'Pen: nothing drawn yet');
     }
     function flushInk() {
-        clearTimeout(inkTimer); if (!inkDirty) return; inkDirty = false;
+        clearTimeout(inkTimer); if (!inkDirty) return;
+        // never write before your saved strokes have loaded (the write replaces your whole ink doc)
+        if (!inkLoaded) { inkTimer = setTimeout(flushInk, 500); return; }
+        inkDirty = false;
         const mine = inks[me.uid] || {};
         inkSaving++; setInkStatus('saving');
-        inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, updatedAt: Date.now() })
-            .then(() => { inkSaving--; if (!inkSaving && !inkDirty) setInkStatus('saved'); })
-            .catch(e => { inkSaving--; inkDirty = true; setInkStatus('error'); B.toast('Could not save pen marks: ' + e.message, 'error'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 4000); });
+        inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, pv: doc.pagesVersion ?? null, updatedAt: Date.now() })
+            .then(() => { inkSaving--; inkFails = 0; if (!inkSaving && !inkDirty) setInkStatus('saved'); })
+            .catch(e => {
+                inkSaving--; inkDirty = true; inkFails++; setInkStatus('error');
+                if (inkFails <= 5 && alive) { toast('Could not save pen marks: ' + e.message + ' — retrying', 'error'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 4000); }
+                else if (alive) toast('Pen marks still not saved. Please check your connection before leaving this sheet.', 'error');
+            });
     }
     function saveInk() { inkDirty = true; setInkStatus('dirty'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 700); }
-    window.addEventListener('beforeunload', (e) => { if (inkDirty || inkSaving) { e.preventDefault(); e.returnValue = ''; } });
+    const warnUnload = (e: BeforeUnloadEvent) => { if (alive && (inkDirty || inkSaving)) { e.preventDefault(); e.returnValue = ''; } };
+    window.addEventListener('beforeunload', warnUnload);
     window.addEventListener('pagehide', flushInk);
     // drawing
     pagesEl.addEventListener('pointerdown', (ev: PointerEvent) => {
@@ -492,9 +519,9 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     (async () => {
         try {
             const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
-            snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => a.d === c.d))]; }); } else inks[tu] = d.data().pages || {}; } });
-            pageWrap.forEach((_, i) => renderInk(i)); setInkStatus('idle');
-        } catch (e) { console.warn('[osm] ink load', e); }
+            snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { if ((d.data().pv ?? null) !== (doc.pagesVersion ?? null)) return; const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => a.d === c.d))]; }); } else inks[tu] = d.data().pages || {}; } });
+            pageWrap.forEach((_, i) => renderInk(i)); inkLoaded = true; setInkStatus('idle');
+        } catch (e) { console.warn('[osm] ink load', e); inkLoaded = true; toast('Could not load existing pen marks — new marks will still be saved.', 'info'); }
     })();
 
     // ---- tool buttons ------------------------------------------------------
@@ -522,7 +549,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
 
     // ---- marks panel -------------------------------------------------------
     const saveTimers: Record<number, any> = {}; const pendingRun: Record<number, () => void> = {};
-    function flushMarks() { Object.keys(pendingRun).forEach(k => { const i = Number(k); clearTimeout(saveTimers[i]); const f = pendingRun[i]; delete pendingRun[i]; f(); }); }
+    function flushMarks() { return Promise.all(Object.keys(pendingRun).map(k => { const i = Number(k); clearTimeout(saveTimers[i]); const f = pendingRun[i]; delete pendingRun[i]; return f(); })); }
     let savingCount = 0; let statusEl: HTMLElement | null = null;
     const setStatus = (t: string, cls = '') => { if (statusEl) { statusEl.textContent = t; statusEl.className = 'osm-save ' + cls; } };
     function chipValues(max: number): number[] {
@@ -558,7 +585,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                   <span class="osm-max">out of ${fmt1(max)}</span></div>
                 <div class="osm-q-row">
                   <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
-                  <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m ? m.v : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
+                  <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m ? esc(Number(m.v)) : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
                   <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
                   <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
                 </div>
@@ -614,7 +641,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             if (raw.trim() === '') return;   // clearing a box does not delete a saved mark by accident
             if (/[.,]$/.test(raw.trim())) return;   // still typing "1." — wait for the next digit
             let v = Math.round(parseFloat(raw.replace(',', '.')) * 2) / 2;   // marks are in half-mark steps
-            if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; B.toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
+            if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
             if (document.activeElement !== inp) inp.value = String(v);
             const entry = { v, by: me.uid, n: me.name, t: Date.now() };
             (doc.marks ||= {})[qk(i)] = entry;
@@ -629,7 +656,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                 if (reopened) { delete doc.done![me.uid]; renderSideKeepFocus(); }
                 savingCount--; if (!savingCount) setStatus('Saved ✓', 'ok');
                 refreshScoreOnly();
-            } catch (e: any) { savingCount--; setStatus('Not saved — check connection', 'bad'); B.toast('Could not save mark: ' + e.message, 'error'); }
+            } catch (e: any) { savingCount--; setStatus('Not saved — check connection', 'bad'); toast('Could not save mark: ' + e.message, 'error'); }
         };
         pendingRun[i] = run;
         const go = () => { delete pendingRun[i]; run(); };
@@ -639,7 +666,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const a = document.activeElement as HTMLInputElement | null; const i = a?.classList.contains('osm-in') ? a.dataset.i : null; const v = a?.value;
         renderSide();
         if (i != null) { const n = sideEl.querySelector(`.osm-in[data-i="${i}"]`) as HTMLInputElement | null; if (n) { n.value = v ?? n.value; n.focus(); } }
-        B.toast('You changed a mark, so “Marks Given” was reopened — click it again when finished.', 'info');
+        toast('You changed a mark, so “Marks Given” was reopened — click it again when finished.', 'info');
     }
     function refreshScoreOnly() {
         const sc = scoreFor(paper, doc.marks); const dt = declaredTotal(paper);
@@ -649,18 +676,20 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); { const cur = doc.marks?.[qk(i)]?.v; r.querySelectorAll<HTMLElement>('.osm-cv').forEach(c => c.classList.toggle('sel', cur !== undefined && Number(c.dataset.v) === cur)); } r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
     }
     async function toggleDone() {
+        await flushMarks();   // a mark typed a moment ago must count
         const iAmDone = !!doc.done?.[me.uid];
         if (!iAmDone) {
             const mine = paper.questions.map((_, i) => i).filter(i => hasAssign ? myIdx.has(i) : true);
             // An unattempted alternative (OR) question needs no mark when its partner has one: it is saved as 0 for you.
             const partnerOf = (i: number) => { const ci = String(paper.questions[i].checkingInstructions || ''); if (!/alternative question \(or\)/i.test(ci)) return -1; const m = ci.match(/with\s+question\s+([\w.\-\s()]+?)(?:\.\s|\.$|,|;|$)/i); if (!m) return -1; const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, ''); return paper.questions.findIndex(q => n(q.questionNumber || '') === n(m[1])); };
             const autoZero = mine.filter(i => doc.marks?.[qk(i)] === undefined && partnerOf(i) >= 0 && doc.marks?.[qk(partnerOf(i))] !== undefined);
-            for (const i of autoZero) { const e = { v: 0, by: me.uid, n: me.name, t: Date.now() }; (doc.marks ||= {})[qk(i)] = e; await stuRef(paper, studentUid).set({ marks: { [qk(i)]: e }, updatedAt: Date.now() }, { merge: true }); }
+            try { for (const i of autoZero) { const e = { v: 0, by: me.uid, n: me.name, t: Date.now() }; (doc.marks ||= {})[qk(i)] = e; await stuRef(paper, studentUid).set({ marks: { [qk(i)]: e }, updatedAt: Date.now() }, { merge: true }); } }
+            catch (e: any) { toast('Could not save: ' + e.message, 'error'); return; }
             if (autoZero.length) renderSide();
             const missing = mine.filter(i => doc.marks?.[qk(i)] === undefined);
             if (missing.length) {
                 const first = missing[0];
-                B.toast(`${missing.length} question(s) still have no mark (first: Q${paper.questions[first].questionNumber || first + 1}). Enter 0 if the student scored nothing.`, 'error');
+                toast(`${missing.length} question(s) still have no mark (first: Q${paper.questions[first].questionNumber || first + 1}). Enter 0 if the student scored nothing.`, 'error');
                 const row = sideEl.querySelector(`.osm-q[data-i="${first}"]`) as HTMLElement | null; row?.scrollIntoView({ block: 'center', behavior: 'smooth' }); row?.classList.add('flash'); setTimeout(() => row?.classList.remove('flash'), 1500);
                 return;
             }
@@ -670,8 +699,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             if (iAmDone) { await ref.update({ ['done.' + me.uid]: B.FieldValue.delete() }); delete doc.done![me.uid]; }
             else { await ref.set({ done: { [me.uid]: { n: me.name, t: Date.now() } } }, { merge: true }); (doc.done ||= {})[me.uid] = { n: me.name, t: Date.now() }; }
             renderSide();
-            B.toast(iAmDone ? 'Reopened for editing.' : 'Marks given ✓', 'success');
-        } catch (e: any) { B.toast('Could not update: ' + e.message, 'error'); }
+            toast(iAmDone ? 'Reopened for editing.' : 'Marks given ✓', 'success');
+        } catch (e: any) { toast('Could not update: ' + e.message, 'error'); }
     }
     renderSide();
 
@@ -690,7 +719,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         }
     }, (e: any) => console.warn('[osm] live listener', e));
     stopListeners.push(unsub);
-    stopListeners.push(() => { flushInk(); window.removeEventListener('pagehide', flushInk); Object.keys(saveTimers).forEach(k => { /* pending mark saves are flushed below */ }); flushMarks(); });
+    stopListeners.push(() => { flushInk(); alive = false; window.removeEventListener('beforeunload', warnUnload); window.removeEventListener('pagehide', flushInk); Object.keys(saveTimers).forEach(k => { /* pending mark saves are flushed below */ }); flushMarks(); });
 }
 
 // ───────────────────────── styles (ClassMap look: Poppins, blue→purple gradient, soft rounded cards) ─────────────────────────
@@ -758,6 +787,9 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-by{font-size:.74rem;color:var(--osm-muted);margin-top:6px}
 .osm-det{margin-top:8px;font-size:.84rem}.osm-det summary{cursor:pointer;color:var(--osm-muted)}.osm-qtext,.osm-ans,.osm-ci{margin-top:6px;line-height:1.5;white-space:pre-wrap}.osm-ci{color:var(--osm-muted);font-size:.8rem}
 .osm-foot{border-top:1px solid var(--osm-line);padding:10px 12px;display:flex;flex-direction:column;gap:7px}.osm-doneline{display:flex;flex-wrap:wrap;gap:3px}.osm-doneline .osm-chip{font-size:.7rem;padding:1px 7px;margin-right:0}.osm-nav{display:flex;justify-content:space-between;gap:8px}
+#osm-toasts{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:9950;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;font-family:'Poppins',system-ui,sans-serif}
+.osm-toast{background:#2b3040;color:#fff;padding:11px 18px;border-radius:14px;font-size:.88rem;box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:min(560px,92vw)}.osm-toast.error{background:#c0392b}.osm-toast.success{background:#1e9e5a}
+#osm-busy{position:fixed;inset:0;z-index:9900;background:rgba(245,247,250,.82);display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;font-family:'Poppins',system-ui,sans-serif;color:#34495e;font-weight:500}
 @media (max-width:900px){.osm-side{width:340px}.osm-kpis{display:none}}
 `;
     document.head.appendChild(s);
