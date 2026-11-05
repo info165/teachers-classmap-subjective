@@ -73,3 +73,7 @@ Newest entries at the bottom. Read "DECISIONS" first, then "STATUS".
   Verified locally: class page shows Teacher Marking, Exams count unaffected, 16/16 pages of 9A first student load.
   BEFORE LIVE DEPLOY: flag is on for ALL Newtown teachers -> Assignments/Worksheets hidden for them as soon as the new build is live.
   UNDO: delete teachers/{hbGbHH...} data + 3 rosters + flag (set features.teacherManualMarking false).
+
+- 2026-11-05 (analysis v2): strict analysis pipeline (see analysis/README.md "Analysis rules"), teacher "Analysis" card with autosave + separate analysis PDF,
+  edit-save guard (existing recompute no longer overwrites teacher_marking analysis), Marks Given = verification. Demo: dummy school paper "Mid-Term Examination (demo)".
+  Found: Q39 pair lacked reciprocal OR marker in the Newtown paper data (fixed only in the demo copy); counted marks add to 82 vs declared 80 (28.B.I/II).

@@ -54,6 +54,8 @@ handleRefreshTeacherInsights: () => void;
 handleRefreshHomeworkSummary: () => void;
 toggleFeedbackEdit: (reportIndex: number, questionIndex: number, isEditing: boolean) => void;
 saveFeedbackEdit: (reportIndex: number, questionIndex: number) => void;
+osmAnalysisEdit: (reportIndex: number) => void;
+osmDownloadAnalysisPdf: (reportIndex: number) => Promise<void>;
 handleDeleteStudentReport: (reportIndex: number) => void;
 handlePublishAllReports: () => void;
 handlePublishGuard: (reportIndex: number) => void;
@@ -14753,7 +14755,7 @@ const docRef = isHomeworkReport
 
         // We only need to update the fields that changed.
 // Recompute weakness/strength data from current marks — zero cost, no AI call
-        recomputeOverallFeedbackFromEdits(report);
+        if ((report as any).source !== 'teacher_marking') recomputeOverallFeedbackFromEdits(report);   // Teacher Marking analysis is hand-written + editable: never overwrite it
 
 // Slim fields go to main doc
 await docRef.update(sanitizeObjectForFirestore({
@@ -24555,6 +24557,105 @@ window.handleOpenFullscreenGrading = () => {
 
 
 
+
+// ===================================================================================
+// --- TEACHER MARKING: editable analysis card + separate analysis PDF -----------------
+// Only shown for reports written by the Teacher Marking pipeline (report.source === 'teacher_marking').
+// Everything here is additive; edits are saved automatically and never reset verification.
+// ===================================================================================
+const _escH = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const _lvlColor: Record<string, string> = { 'Strong': '#1e9e5a', 'Good': '#2575fc', 'Developing': '#e08a00', 'Needs work': '#e74c3c' };
+function buildOsmAnalysisCardHtml(report: AIFullAssessmentReport, reportIndex: number): string {
+    if ((report as any).source !== 'teacher_marking') return '';
+    const of: any = report.overallFeedback || {};
+    const an: any = (report as any).analysis || {};
+    const cm: any[] = of.conceptMastery || an.conceptMastery || [];
+    const lines = (arr: any) => (Array.isArray(arr) ? arr : []).map((x: any) => typeof x === 'string' ? x : (x?.text || '')).join('\n');
+    const rows = cm.map(c => `<tr><td>${_escH(c.topic)}</td><td style="text-align:right;">${_escH(c.scored)}/${_escH(c.max)}</td>
+        <td style="width:34%;"><div style="height:8px;background:#e9edf5;border-radius:6px;overflow:hidden;"><i style="display:block;height:100%;width:${Math.max(0, Math.min(100, Number(c.pct) || 0))}%;background:${_lvlColor[c.level] || '#7f8c8d'};"></i></div></td>
+        <td><span style="font-size:.72rem;font-weight:700;color:#fff;background:${_lvlColor[c.level] || '#7f8c8d'};padding:2px 9px;border-radius:99px;">${_escH(c.level)} ${_escH(c.pct)}%</span></td></tr>`).join('');
+    const flags: any[] = an.flags || [];
+    const ta = (id: string, label: string, val: string, rowsN: number, hint = '') => `<label style="display:block;font-weight:600;font-size:.82rem;margin:12px 0 4px;color:#34495e;">${label}${hint ? ` <span style="font-weight:400;color:#7f8c8d;">${hint}</span>` : ''}</label>
+        <textarea id="${id}" rows="${rowsN}" oninput="window.osmAnalysisEdit(${reportIndex})" style="width:100%;border:1px solid #d9e1f2;border-radius:10px;padding:9px 11px;font-family:inherit;font-size:.86rem;line-height:1.45;resize:vertical;">${_escH(val)}</textarea>`;
+    return `<div id="osm-analysis-card" style="margin:16px 0;padding:18px 20px;border:1px solid #d9e1f2;border-radius:16px;background:linear-gradient(180deg,#f7f9ff,#fff);">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <h4 style="margin:0;font-size:1.05rem;color:#2c3e50;">🧠 Analysis <span style="font-weight:400;font-size:.8rem;color:#7f8c8d;">— edit anything below; changes save automatically</span></h4>
+        <span id="osm-an-status" style="font-size:.78rem;color:#1e9e5a;margin-left:auto;">✓ Saved</span>
+        <button class="button-primary small-button" onclick="window.osmDownloadAnalysisPdf(${reportIndex})">📄 Analysis PDF</button>
+      </div>
+      ${report.published ? `<div style="margin-top:8px;font-size:.78rem;color:#b45309;background:#fff6e5;padding:6px 10px;border-radius:8px;">This report is already published. Edits are saved here; to update the student's copy, Unpublish and Publish it again.</div>` : ''}
+      ${ta('osm-an-summary', 'Summary', of.summary || '', 3)}
+      <label style="display:block;font-weight:600;font-size:.82rem;margin:14px 0 6px;color:#34495e;">Concept mastery <span style="font-weight:400;color:#7f8c8d;">(worked out from the teachers' marks; uncounted OR alternatives are left out)</span></label>
+      <table style="width:100%;border-collapse:collapse;font-size:.84rem;"><tbody>${rows || '<tr><td>No concept data.</td></tr>'}</tbody></table>
+      ${ta('osm-an-strengths', 'Strengths', lines(of.strengths), 3, '(one per line)')}
+      ${ta('osm-an-areas', 'Weaknesses / areas to improve', lines(of.areasForImprovement), 4, '(one per line)')}
+      ${ta('osm-an-steps', 'Next steps for the student', lines(of.nextSteps), 4, '(one per line)')}
+      ${flags.length ? `<div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:#fff6e5;border:1px solid #f3d9a4;font-size:.8rem;color:#7a5200;"><b>For you only (not shown to students):</b><ul style="margin:6px 0 0 18px;padding:0;">${flags.map(f => `<li>Q${_escH(f.q)}: ${_escH(f.text)}</li>`).join('')}</ul></div>` : ''}
+      <div style="margin-top:10px;font-size:.76rem;color:#7f8c8d;">Per-question feedback for questions that lost marks is edited in the <b>Marker Notes</b> next to each answer below. Full-mark questions have no feedback.</div>
+    </div>`;
+}
+let _osmAnTimer: any = null;
+window.osmAnalysisEdit = (reportIndex: number) => {
+    const report: any = assessmentReports[reportIndex]; if (!report) return;
+    const st = document.getElementById('osm-an-status'); if (st) { st.textContent = '● Saving…'; st.style.color = '#e08a00'; }
+    clearTimeout(_osmAnTimer);
+    _osmAnTimer = setTimeout(async () => {
+        const v = (id: string) => ((document.getElementById(id) as HTMLTextAreaElement | null)?.value || '');
+        const split = (t: string) => t.split('\n').map(x => x.trim()).filter(Boolean);
+        report.overallFeedback = { ...(report.overallFeedback || {}), summary: v('osm-an-summary').trim(), strengths: split(v('osm-an-strengths')), areasForImprovement: split(v('osm-an-areas')), nextSteps: split(v('osm-an-steps')) };
+        report.analysis = { ...(report.analysis || {}), edited: true, editedAt: new Date().toISOString(), editedBy: teacherProfile?.name || '' };
+        try {
+            const ownerUid = report._ownerTeacherUid || teacherProfile!.uid;
+            const ownerAid = report._ownerAssessmentId || (currentAssessmentForReportView as any)?.assessmentId;
+            await fbFirestore.collection('teachers').doc(ownerUid).collection('assessmentHistory').doc(ownerAid).collection('submissions').doc(report.submissionDocId)
+                .update(sanitizeObjectForFirestore({ overallFeedback: report.overallFeedback, analysis: report.analysis }));
+            if (st) { st.textContent = '✓ Saved'; st.style.color = '#1e9e5a'; }
+        } catch (e) { console.error('[osm analysis] save failed', e); if (st) { st.textContent = '⚠ Not saved — check connection'; st.style.color = '#e74c3c'; } }
+    }, 900);
+};
+window.osmDownloadAnalysisPdf = async (reportIndex: number) => {
+    const report: any = assessmentReports[reportIndex]; if (!report) return;
+    const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => { if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; } const sc = document.createElement('script'); sc.src = src; sc.onload = () => resolve(); sc.onerror = () => reject(); document.head.appendChild(sc); });
+    toggleLoading(true, 'Preparing analysis PDF…');
+    try {
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+        const html2canvas = (window as any).html2canvas; const { jsPDF } = (window as any).jspdf;
+        const of: any = report.overallFeedback || {}; const an: any = report.analysis || {}; const cm: any[] = of.conceptMastery || an.conceptMastery || [];
+        const ctx: any = currentAssessmentForReportView || currentAssessmentToGrade || {};
+        const pct = report.maximumMarks > 0 ? Math.round(report.overallScore / report.maximumMarks * 100) : 0;
+        const list = (arr: any) => (Array.isArray(arr) ? arr : []).map((x: any) => `<li style="margin:3px 0;">${formatMathExpressions(_escH(typeof x === 'string' ? x : x?.text || ''))}</li>`).join('');
+        const lost = (report.questionWiseReport || []).filter((q: any) => !q._runtimeOrLoser && q.marksAwarded < q.maxMarksForQuestion && q.finalFeedback);
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;background:#fff;color:#2c3e50;font-family:Poppins,Arial,sans-serif;padding:34px 38px;box-sizing:border-box;';
+        wrap.innerHTML = `
+          <div style="background:linear-gradient(135deg,#2575fc,#6a11cb);color:#fff;border-radius:14px;padding:18px 22px;">
+            <div style="font-size:.7rem;letter-spacing:2px;opacity:.85;">PERFORMANCE ANALYSIS</div>
+            <div style="font-size:1.5rem;font-weight:700;margin-top:4px;">${_escH(report.studentName)} <span style="font-size:.85rem;font-weight:400;opacity:.85;">#${_escH(report.rollNumber || '')}</span></div>
+            <div style="font-size:.85rem;opacity:.92;margin-top:4px;">${_escH(teacherProfile?.schoolName || '')} · Class ${_escH(ctx.className || report.className || '')}-${_escH(ctx.section || report.section || '')} · ${_escH(ctx.subject || report.subject || '')} · ${_escH(ctx.assessmentTitle || '')}</div>
+            <div style="font-size:1.6rem;font-weight:700;margin-top:10px;">${_escH(report.overallScore)} / ${_escH(report.maximumMarks)} <span style="font-size:1rem;font-weight:500;">(${pct}%)</span></div>
+          </div>
+          <h3 style="font-size:1rem;margin:18px 0 6px;">Summary</h3><div style="font-size:.88rem;line-height:1.55;">${formatMathExpressions(_escH(of.summary || ''))}</div>
+          <h3 style="font-size:1rem;margin:18px 0 6px;">Concept mastery</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:.8rem;">${cm.map(c => `<tr><td style="padding:4px 6px;width:38%;">${_escH(c.topic)}</td><td style="padding:4px 6px;width:11%;text-align:right;">${_escH(c.scored)}/${_escH(c.max)}</td><td style="padding:4px 6px;width:35%;"><div style="height:9px;background:#e9edf5;border-radius:6px;overflow:hidden;"><i style="display:block;height:100%;width:${Math.max(0, Math.min(100, Number(c.pct) || 0))}%;background:${_lvlColor[c.level] || '#7f8c8d'};"></i></div></td><td style="padding:4px 6px;font-weight:700;color:${_lvlColor[c.level] || '#7f8c8d'};">${_escH(c.level)} ${_escH(c.pct)}%</td></tr>`).join('')}</table>
+          <div style="display:flex;gap:18px;margin-top:6px;"><div style="flex:1;"><h3 style="font-size:1rem;margin:16px 0 4px;color:#1e9e5a;">Strengths</h3><ul style="font-size:.84rem;padding-left:18px;margin:0;">${list(of.strengths) || '<li>—</li>'}</ul></div>
+          <div style="flex:1;"><h3 style="font-size:1rem;margin:16px 0 4px;color:#e74c3c;">Areas to improve</h3><ul style="font-size:.84rem;padding-left:18px;margin:0;">${list(of.areasForImprovement) || '<li>—</li>'}</ul></div></div>
+          <h3 style="font-size:1rem;margin:18px 0 4px;">Next steps</h3><ol style="font-size:.86rem;padding-left:20px;margin:0;">${list(of.nextSteps) || '<li>—</li>'}</ol>
+          ${lost.length ? `<h3 style="font-size:1rem;margin:20px 0 6px;">Where marks were lost</h3>${lost.map((q: any) => `<div style="border:1px solid #e3e8f0;border-left:4px solid #e08a00;border-radius:8px;padding:8px 11px;margin:6px 0;page-break-inside:avoid;"><div style="font-weight:700;font-size:.84rem;">Q${_escH(q.questionNumber)} <span style="float:right;color:#e08a00;">${_escH(q.marksAwarded)}/${_escH(q.maxMarksForQuestion)}</span></div><div style="font-size:.8rem;line-height:1.5;white-space:pre-wrap;margin-top:3px;">${formatMathExpressions(_escH(q.finalFeedback))}</div></div>`).join('')}` : ''}
+          <div style="margin-top:18px;font-size:.68rem;color:#95a5a6;">Questions answered with full marks carry no feedback. Report generated ${new Date().toLocaleDateString('en-GB')} · ClassMap</div>`;
+        document.body.appendChild(wrap);
+        await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r));
+        const canvas = await html2canvas(wrap, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, windowWidth: 794 });
+        wrap.remove();
+        const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+        const pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight();
+        const imgH = pageW * (canvas.height / canvas.width); const img = canvas.toDataURL('image/jpeg', 0.88);
+        for (let y = 0; y < imgH; y += pageH) { if (y > 0) pdf.addPage(); pdf.addImage(img, 'JPEG', 0, -y, pageW, imgH, undefined, 'FAST'); }
+        pdf.save(`${(report.studentName || 'student').replace(/[^\w]+/g, '_')}_${(ctx.assessmentTitle || 'exam').replace(/[^\w]+/g, '_')}_analysis.pdf`);
+    } catch (e) { console.error('[osm analysis pdf]', e); showFeedbackMessage('Could not create the analysis PDF.', 'error'); }
+    finally { toggleLoading(false); }
+};
+
 function renderReportPageUI(report: AIFullAssessmentReport, reportIndex: number) {
     // 1. Check if Fullscreen is open
     const fsModal = document.getElementById('fullscreen-grading-modal');
@@ -25721,7 +25822,7 @@ const globalQIdx = report.questionWiseReport.indexOf(qr);
         </div>
     `;
 
-contentEl.innerHTML = headerHtml + scoreSummaryGridHtml + splitViewHtml + footerHtml + improvementSectionHtml;    
+contentEl.innerHTML = headerHtml + scoreSummaryGridHtml + buildOsmAnalysisCardHtml(report, reportIndex) + splitViewHtml + footerHtml + improvementSectionHtml;    
     // Setup Download Button Data
     const downloadBtn = document.getElementById('download-individual-report-btn') as HTMLButtonElement;
     if (downloadBtn) {
@@ -25997,6 +26098,7 @@ window.updateOsmMarkerText = (reportIndex: number, questionIndex: number, stepIn
     const step = report.questionWiseReport[questionIndex]?.stepWiseEvaluation[stepIndex];
     if (!step) return;
     step.comment = newText;
+    if ((report as any).source === 'teacher_marking') { const qrT = report.questionWiseReport[questionIndex]; if (qrT) qrT.finalFeedback = newText; }
     saveUpdatedAssessmentReport(report);
     // Re-render only the overlay layer (not the full page UI — user may be mid-typing)
     const currentPage = (window as any).currentReportPageIdx || 0;

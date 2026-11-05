@@ -19,3 +19,11 @@ Teachers can type notes on the page. `manifest.json` has `students[].notes` ([{p
 
 ## failureMode (required when marks are lost)
 Each lost-mark question needs `failureMode`: NEVER_KNEW (no idea / blank), KNEW_BUT_FORGOT, KNEW_BUT_MISAPPLIED (wrong law/term/concept), KNEW_BUT_MISCALCULATED (sign/arithmetic), KNEW_BUT_INCOMPLETE (right idea, parts or numbers missing). The student app uses it for the study plan; without it every gap reads 'zero foundation'. Optional: failurePoint, prerequisiteConcept.
+
+## Analysis rules (enforced by finalize.js)
+- Teachers' marks are fixed. Full marks and uncounted OR alternatives get NO feedback.
+- Every counted question that lost marks needs: page, studentWrote, missedFromKey (quotes that finalize checks against the answer key / rubric / checking instructions), whyWrong, howToImprove, failureMode. Feedback quoting x/y marks must match the teacher's marks; partial marks cannot be called wholly wrong; zero marks cannot be praised.
+- Every question needs topic + concept (chapter-level). Concept mastery, strengths and weaknesses are COMPUTED from the marks (uncounted alternatives excluded). nextSteps may only name weak topics and every big weakness needs one.
+- PAPER CHECK: an "Alternative Question (OR) with Question X" must be reciprocated by X, otherwise finalize refuses.
+- Read the actual answer-sheet pages (not only OCR text) for every lost-mark question; a second reviewer then checks review-packet.md against key + marks.
+- Marks Given = verification: all roster teachers are recorded as verified so teacher/admin Publish works straight away; teachers can edit the analysis (autosaved) first.
