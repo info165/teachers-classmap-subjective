@@ -79,15 +79,15 @@ export function closeOsm() {
 function clearListeners() { stopListeners.forEach(f => { try { f(); } catch { /* ignore */ } }); stopListeners = []; }
 
 // ───────────────────────── loading papers / teachers ─────────────────────────
-async function expectedTeachers(r: Roster): Promise<{ uid: string; name: string }[]> {
+async function expectedTeachers(r: Roster): Promise<{ uid: string; name: string; email?: string }[]> {
     const snap = await B.db.collection('classRosters')
         .where('className', '==', r.className).where('section', '==', r.section)
         .where('subject', '==', r.subject).where('schoolName', '==', r.schoolName).get();
-    const out: { uid: string; name: string }[] = [];
+    const out: { uid: string; name: string; email?: string }[] = [];
     snap.docs.forEach((d: any) => {
         const x = d.data();
         if ((x.stream || '') !== (r.stream || '')) return;
-        if (!out.some(o => o.uid === x.teacherUid)) out.push({ uid: x.teacherUid, name: x.teacherName || x.teacherUid });
+        if (!out.some(o => o.uid === x.teacherUid)) out.push({ uid: x.teacherUid, name: x.teacherName || x.teacherUid, email: x.teacherEmail || '' });
     });
     return out;
 }
@@ -151,36 +151,38 @@ function studentState(paper: Paper, s: StuDoc | undefined, meta: Meta, teachers:
     return { code: 'prog', label: `In progress · ${sc.marked}/${sc.count}`, ready, doneBy, needBy: need.filter(u => !doneBy.includes(u)).map(nameOf) };
 }
 
-// ───────────────────────── SCREEN A: home ─────────────────────────
-export async function openOsmHome(roster: Roster) {
-    const el = ensureRoot();
-    clearListeners();
-    el.innerHTML = shell(`Teacher Marking`, `Class ${esc(roster.className)}–${esc(roster.section)} · ${esc(roster.subject)}${roster.stream ? ' · ' + esc(roster.stream) : ''}`,
-        `<div class="osm-center"><div class="osm-spin"></div></div>`);
-    wireClose(el);
-    try {
-        const teachers = await expectedTeachers(roster);
-        const papers = await loadPapers(roster, teachers);
-        const body = el.querySelector('.osm-body') as HTMLElement;
-        body.innerHTML = `
-          <div class="osm-toolbar"><h2>Question papers</h2><button class="osm-btn primary" id="osm-new">＋ New paper</button></div>
-          ${papers.length === 0 ? `<div class="osm-empty"><p>No papers yet.</p><p class="osm-sub">Create a question paper (Excel), upload each student's answer sheet, then mark it on screen. Your co-teachers see the same papers and marks.</p></div>` :
-            `<div class="osm-grid">${papers.map(p => `
-              <button class="osm-card" data-id="${esc(p.id)}">
-                <div class="osm-card-title">${esc(p.title)}</div>
-                <div class="osm-sub">${p.questions.length} questions · ${declaredTotal(p) || '—'} marks</div>
-                <div class="osm-sub">Created ${p.created ? new Date(p.created).toLocaleDateString() : ''}</div>
-              </button>`).join('')}</div>`}
-          <p class="osm-sub osm-teachers">Teachers on this class: ${teachers.map(t => esc(t.name)).join(', ') || '—'}</p>`;
-        body.querySelector('#osm-new')!.addEventListener('click', () => openCreatePaper(roster, teachers));
-        body.querySelectorAll<HTMLElement>('.osm-card').forEach(c => c.addEventListener('click', () => {
-            const p = papers.find(x => x.id === c.dataset.id)!;
-            openPaperRoster(roster, p, teachers);
-        }));
-    } catch (e: any) {
-        console.error('[osm] home failed', e);
-        (el.querySelector('.osm-body') as HTMLElement).innerHTML = `<div class="osm-empty"><p>Could not load papers.</p><p class="osm-sub">${esc(e?.message)}</p></div>`;
-    }
+// ───────────────────────── Exams box integration ─────────────────────────
+// Papers are created with the normal Exams "+" form (index.tsx saves them with assessmentMode:'osm').
+// They are listed in the same Exams box on the class page; opening one goes straight to the paper screen.
+const PREVIEW_EMAIL = 'marking.preview@classmap.in';
+async function visibleContext(roster: Roster) {
+    const all = await expectedTeachers(roster);
+    const me = B.teacher()!;
+    const teachers = all.filter(t => t.email !== PREVIEW_EMAIL || t.uid === me.uid);
+    const papers = (await loadPapers(roster, all)).filter(p => me.uid === p.owner || !all.some(t => t.uid === p.owner && t.email === PREVIEW_EMAIL));
+    return { all, teachers, papers };
+}
+export async function osmTitleExists(roster: Roster, title: string): Promise<boolean> {
+    const { papers } = await visibleContext(roster);
+    return papers.some(p => norm(p.title) === norm(title));
+}
+export async function renderOsmExamRows(container: HTMLElement, roster: Roster) {
+    const { teachers, papers } = await visibleContext(roster);
+    if (!papers.length) return;
+    container.querySelector('.cp-list-empty')?.remove();
+    container.querySelectorAll('.osm-row').forEach(n => n.remove());
+    const frag = document.createDocumentFragment();
+    papers.forEach(p => {
+        const div = document.createElement('div');
+        div.className = 'cp-list-item osm-row';
+        div.style.cursor = 'pointer';
+        div.innerHTML = `<div class="cp-list-item-info"><div class="cp-list-item-title">${esc(p.title)}</div>
+            <div class="cp-list-item-meta">✍️ On-screen marking &nbsp;·&nbsp; ${declaredTotal(p) || 'N/A'} marks &nbsp;·&nbsp; ${p.questions.length} questions &nbsp;·&nbsp; ${p.created ? new Date(p.created).toLocaleDateString('en-GB') : ''}</div></div>
+            <div class="cp-list-item-actions" style="display:flex;"><button class="button-primary small-button">Open</button></div>`;
+        div.addEventListener('click', () => openPaper(roster, p, teachers));
+        frag.appendChild(div);
+    });
+    container.prepend(frag);
 }
 
 function shell(title: string, sub: string, bodyHtml: string, backLabel = 'Back to class') {
@@ -194,74 +196,15 @@ function wireClose(el: HTMLElement, fn?: () => void) {
     el.querySelector('#osm-close')?.addEventListener('click', fn || (() => { closeOsm(); B.backToClass(); }));
 }
 
-// ───────────────────────── create paper ─────────────────────────
-function openCreatePaper(roster: Roster, teachers: { uid: string; name: string }[]) {
-    const el = ensureRoot();
-    el.innerHTML = shell('New question paper', `Class ${esc(roster.className)}–${esc(roster.section)} · ${esc(roster.subject)}`, `
-      <div class="osm-form">
-        <label>Paper title<input id="osm-np-title" placeholder="e.g. Half-Yearly Examination"></label>
-        <label>Total marks (declared on the paper)<input id="osm-np-total" type="number" min="1" step="1" placeholder="e.g. 80"></label>
-        <label>Question paper Excel<input id="osm-np-file" type="file" accept=".xlsx,.xls"></label>
-        <p class="osm-sub">Same Excel template as Exams. The total marks you type here is the paper's total — it is <b>never</b> re-added from the questions, because alternative (OR) questions add extra marks that students don't attempt.</p>
-        <div id="osm-np-preview"></div>
-        <div class="osm-actions"><button class="osm-btn primary" id="osm-np-save" disabled>Save paper</button></div>
-      </div>`, 'Back to papers');
-    wireClose(el, () => openOsmHome(roster));
-    let questions: any[] = [];
-    const fileEl = el.querySelector('#osm-np-file') as HTMLInputElement;
-    const saveBtn = el.querySelector('#osm-np-save') as HTMLButtonElement;
-    const prev = el.querySelector('#osm-np-preview') as HTMLElement;
-    fileEl.addEventListener('change', async () => {
-        const f = fileEl.files?.[0]; if (!f) return;
-        B.loading(true, 'Reading Excel…');
-        try {
-            questions = await B.parseExcel(f);
-            if (!questions.length) { B.toast('No questions found in that Excel.', 'error'); saveBtn.disabled = true; return; }
-            const sum = questions.reduce((s, q) => s + qMax(q), 0);
-            prev.innerHTML = `<div class="osm-note">${questions.length} questions read. Sum of every question's marks = <b>${fmt1(sum)}</b> (includes alternative OR questions). The declared total above will be used for results.</div>
-              <div class="osm-qtable"><table><thead><tr><th>Q</th><th>Question</th><th>Type</th><th>Marks</th></tr></thead><tbody>
-              ${questions.map((q, i) => `<tr><td>${esc(q.questionNumber || i + 1)}</td><td>${esc(String(q.text || '').slice(0, 110))}</td><td>${esc(q.type || '')}</td><td>${fmt1(qMax(q))}</td></tr>`).join('')}
-              </tbody></table></div>`;
-            saveBtn.disabled = false;
-        } catch (e: any) { B.toast('Could not read Excel: ' + e.message, 'error'); saveBtn.disabled = true; }
-        finally { B.loading(false); }
-    });
-    saveBtn.addEventListener('click', async () => {
-        const title = (el.querySelector('#osm-np-title') as HTMLInputElement).value.trim();
-        const total = Number((el.querySelector('#osm-np-total') as HTMLInputElement).value);
-        if (!title) return B.toast('Please enter the paper title.', 'error');
-        if (!(total > 0)) return B.toast('Please enter the total marks for the paper.', 'error');
-        if (!questions.length) return B.toast('Upload the question paper Excel first.', 'error');
-        // Never create a second paper with the same title for this class (co-teachers share one paper).
-        const existing = await loadPapers(roster, teachers);
-        if (existing.some(p => norm(p.title) === norm(title))) return B.toast('A paper with this title already exists for this class — open it from the list.', 'error');
-        const t = B.teacher()!;
-        const id = B.db.collection('teachers').doc(t.uid).collection('assessmentHistory').doc().id;
-        const clean = JSON.parse(JSON.stringify(questions, (_k, v) => v === undefined ? null : v));
-        saveBtn.disabled = true; B.loading(true, 'Saving paper…');
-        try {
-            await paperRef(t.uid, id).set({
-                assessmentId: id, assessmentMode: 'osm', createdByTeacherUid: t.uid, teacherName: t.name, schoolName: roster.schoolName,
-                board: roster.board || t.board || '', subject: roster.subject, className: roster.className, section: roster.section, stream: roster.stream || '',
-                assessmentTitle: title, questions: clean, totalMarks: total, creationTimestamp: new Date().toISOString(),
-                source: 'question_images', difficultyLevel: '', checkingStrictness: 'Moderate', selectedChapters: [], topics: [], generalInstructions: '',
-            });
-            B.toast('Paper saved.', 'success');
-            openOsmHome(roster);
-        } catch (e: any) { B.toast('Could not save paper: ' + e.message, 'error'); saveBtn.disabled = false; }
-        finally { B.loading(false); }
-    });
-}
-
-// ───────────────────────── SCREEN B: paper roster ─────────────────────────
-async function openPaperRoster(roster: Roster, paper: Paper, teachers: { uid: string; name: string }[]) {
+// ───────────────────────── SCREEN B: paper screen (upload + mark, one view) ─────────────────────────
+async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; name: string }[]) {
     const el = ensureRoot();
     clearListeners();
-    el.innerHTML = shell(paper.title, `Class ${esc(paper.className)}–${esc(paper.section)} · ${esc(paper.subject)} · ${declaredTotal(paper) || '—'} marks`, `<div class="osm-center"><div class="osm-spin"></div></div>`, 'Back to papers');
-    wireClose(el, () => openOsmHome(roster));
+    el.innerHTML = shell(paper.title, `Class ${esc(paper.className)}–${esc(paper.section)} · ${esc(paper.subject)} · ${declaredTotal(paper) || '—'} marks · ${paper.questions.length} questions`, `<div class="osm-center"><div class="osm-spin"></div></div>`, 'Back to class');
+    wireClose(el);
     const me = B.teacher()!;
     let docs = new Map<string, StuDoc>();
-    let meta: Meta = {}; let readFailed = false;
+    let meta: Meta = {}; let readFailed = false; let busy = false;
     async function reload() {
         readFailed = false;
         const [mSnap, ...sSnaps] = await Promise.all([
@@ -273,7 +216,8 @@ async function openPaperRoster(roster: Roster, paper: Paper, teachers: { uid: st
         roster.students.forEach((s: any, i: number) => { const sn: any = sSnaps[i]; if (sn?.exists) docs.set(s.uid, sn.data()); });
     }
     async function render() {
-        const body = el.querySelector('.osm-body') as HTMLElement;
+        const body = el.querySelector('.osm-body') as HTMLElement | null; if (!body) return;
+        const scroll = (el as HTMLElement).scrollTop;
         const rows = roster.students.map((s: any) => {
             const d = docs.get(s.uid);
             const st = studentState(paper, d, meta, teachers);
@@ -287,88 +231,117 @@ async function openPaperRoster(roster: Roster, paper: Paper, teachers: { uid: st
         body.innerHTML = `
           <div class="osm-toolbar">
             <div class="osm-kpis">
-              <div class="osm-kpi"><b>${withSheets.length}</b><span>sheets uploaded</span></div>
+              <div class="osm-kpi"><b>${withSheets.length}<small>/${roster.students.length}</small></b><span>sheets uploaded</span></div>
               <div class="osm-kpi"><b>${readyN}</b><span>ready for analysis</span></div>
-              <div class="osm-kpi"><b>${roster.students.length}</b><span>on roster</span></div>
             </div>
             <div class="osm-toolbar-btns">
-              <button class="osm-btn" id="osm-assign">My questions${myAssign.length ? ` (${myAssign.length})` : ''}</button>
-              <label class="osm-btn" for="osm-bulk">Bulk upload sheets</label><input id="osm-bulk" type="file" multiple accept="image/*,.pdf" hidden>
-              <button class="osm-btn" id="osm-refresh">↻ Refresh</button>
+              <button class="osm-btn" id="osm-assign" title="Pick which questions you will mark, if co-teachers split the paper">My questions${myAssign.length ? ` (${myAssign.length})` : ''}</button>
             </div>
           </div>
           ${allReady ? `<div class="osm-banner ok">✔ All ${withSheets.length} uploaded papers are marked by every teacher — <b>ready for analysis</b>.</div>` : ''}
-          <p class="osm-sub">Bulk upload: name each file with the roll number first, e.g. <code>9A01.pdf</code> or <code>9A01_page2.jpg</code>.</p>
-          <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th></th></tr></thead><tbody>
+          <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th></th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc }) => `<tr>
-            <td>${esc(s.rollNumber || '')}</td><td>${esc(s.name)}</td>
-            <td>${d?.pages?.length ? `${d.pages.length} page${d.pages.length > 1 ? 's' : ''}` : `<span class="osm-muted">—</span>`}
-                <label class="osm-link" for="up-${esc(s.uid)}">${d?.pages?.length ? 'add' : 'upload'}</label><input id="up-${esc(s.uid)}" class="osm-up" data-uid="${esc(s.uid)}" type="file" multiple accept="image/*,.pdf" hidden></td>
-            <td>${d?.pages?.length ? `${fmt1(sc.total)} / ${declaredTotal(paper) || '—'}` : '—'}</td>
+            <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
+            <td>${d?.pages?.length ? `<span class="osm-pgs">${d.pages.length} page${d.pages.length > 1 ? 's' : ''}</span> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Add / replace</button>` : `<button class="osm-btn small osm-up" data-uid="${esc(s.uid)}">⬆ Upload sheet</button>`}</td>
+            <td>${d?.pages?.length ? `<b>${fmt1(sc.total)}</b> / ${declaredTotal(paper) || '—'}` : '—'}</td>
             <td>${teachers.map(t => `<span class="osm-chip ${st.doneBy.includes(t.uid) ? 'on' : ''}" title="${esc(t.name)}">${esc(shortName(t.name, teachers))}${st.doneBy.includes(t.uid) ? ' ✓' : ''}</span>`).join('')}</td>
             <td><span class="osm-badge ${st.code}">${esc(st.label)}</span></td>
             <td>${d?.pages?.length ? `<button class="osm-btn small primary osm-open" data-uid="${esc(s.uid)}">Mark</button>` : ''}</td>
           </tr>`).join('')}
           </tbody></table></div>`;
-        body.querySelector('#osm-refresh')!.addEventListener('click', async () => { B.loading(true, 'Refreshing…'); try { await reload(); await render(); } finally { B.loading(false); } });
+        (el as HTMLElement).scrollTop = scroll;
         body.querySelector('#osm-assign')!.addEventListener('click', () => openAssignModal(paper, meta, me.uid, async (list) => {
             await metaRef(paper).set({ assign: { [me.uid]: list } }, { merge: true });
             await reload(); await render();
         }));
-        body.querySelectorAll<HTMLButtonElement>('.osm-open').forEach(b => b.addEventListener('click', () => openDesk(roster, paper, teachers, b.dataset.uid!, rows.filter(r => r.d?.pages?.length).map(r => r.s.uid))));
-        body.querySelectorAll<HTMLInputElement>('.osm-up').forEach(inp => inp.addEventListener('change', async () => {
-            const files = Array.from(inp.files || []); if (!files.length) return;
-            await uploadSheets(paper, inp.dataset.uid!, roster.students.find((x: any) => x.uid === inp.dataset.uid), files);
-            await reload(); await render();
+        const order = rows.filter(r => r.d?.pages?.length).map(r => r.s.uid);
+        body.querySelectorAll<HTMLButtonElement>('.osm-open').forEach(b => b.addEventListener('click', () => openDesk(roster, paper, teachers, b.dataset.uid!, order)));
+        body.querySelectorAll<HTMLButtonElement>('.osm-up').forEach(b => b.addEventListener('click', () => {
+            const stu = roster.students.find((x: any) => x.uid === b.dataset.uid);
+            openUploadModal(paper, stu, docs.get(b.dataset.uid!)?.pages?.length || 0, async () => { busy = true; try { await reload(); await render(); } finally { busy = false; } });
         }));
-        (body.querySelector('#osm-bulk') as HTMLInputElement).addEventListener('change', async (ev) => {
-            const files = Array.from((ev.target as HTMLInputElement).files || []);
-            const groups = new Map<string, File[]>(); const unmatched: string[] = [];
-            files.forEach(f => {
-                const base = f.name.replace(/\.[^.]+$/, '').toLowerCase();
-                const stu = roster.students.find((x: any) => { const rn = String(x.rollNumber || '').toLowerCase(); return rn && (base === rn || base.startsWith(rn + '_') || base.startsWith(rn + '-') || base.startsWith(rn + ' ')); });
-                if (!stu) { unmatched.push(f.name); return; }
-                if (!groups.has(stu.uid)) groups.set(stu.uid, []); groups.get(stu.uid)!.push(f);
-            });
-            if (unmatched.length) B.toast(`${unmatched.length} file(s) did not match a roll number and were skipped: ${unmatched.slice(0, 3).join(', ')}${unmatched.length > 3 ? '…' : ''}`, 'info');
-            let i = 0;
-            for (const [uid, fs] of groups) {
-                i++; B.loading(true, `Uploading ${i}/${groups.size}…`);
-                await uploadSheets(paper, uid, roster.students.find((x: any) => x.uid === uid), fs, true);
-            }
-            B.loading(false);
-            await reload(); await render();
-        });
         // keep the explicit readiness flag in sync (idempotent) so analysis can find ready papers fast
-        if (readFailed) B.toast('Some students could not be loaded — press Refresh before relying on the status.', 'error');
+        if (readFailed) B.toast('Some students could not be loaded — go back and open the paper again before relying on the status.', 'error');
         if (!readFailed && allReady !== !!meta.readyForAnalysis) {
             metaRef(paper).set({ readyForAnalysis: allReady, readyCount: readyN, sheetCount: withSheets.length, readyAt: allReady ? Date.now() : null }, { merge: true }).catch(() => { /* non-fatal */ });
         }
     }
-    try { await reload(); await render(); }
+    try {
+        await reload(); await render();
+        // Keeps co-teachers' progress current without a Refresh button (paused while a dialog is open).
+        const iv = setInterval(async () => { if (busy || document.querySelector('.osm-modal') || !document.getElementById('osm-root') || document.hidden) return; busy = true; try { await reload(); await render(); } catch { /* try again next tick */ } finally { busy = false; } }, 30000);
+        stopListeners.push(() => clearInterval(iv));
+    }
     catch (e: any) { (el.querySelector('.osm-body') as HTMLElement).innerHTML = `<div class="osm-empty"><p>Could not load this paper.</p><p class="osm-sub">${esc(e?.message)}</p></div>`; }
 }
 
-async function uploadSheets(paper: Paper, studentUid: string, stu: any, files: File[], quiet = false) {
-    const me = B.teacher()!;
-    if (!quiet) B.loading(true, 'Uploading sheet…');
-    try {
+// Upload dialog: PDF (split into page images, exactly like Exams) or photos. When a sheet already exists the teacher
+// must choose: add these pages to the end, or replace the whole sheet.
+function openUploadModal(paper: Paper, stu: any, existing: number, onDone: () => Promise<void>) {
+    const m = document.createElement('div'); m.className = 'osm-modal';
+    m.innerHTML = `<div class="osm-modal-card">
+      <h3>${existing ? 'Add or replace' : 'Upload'} answer sheet</h3>
+      <p class="osm-sub">${esc(stu?.name || '')} · Roll ${esc(stu?.rollNumber || '')}${existing ? ` · currently ${existing} page${existing > 1 ? 's' : ''}` : ''}</p>
+      <div class="osm-drop" id="osm-drop"><div>📄 Drop a PDF or page photos here</div><label class="osm-btn small" for="osm-file">Choose files</label><input id="osm-file" type="file" multiple accept="image/*,application/pdf" hidden></div>
+      <ul class="osm-files" id="osm-files"></ul>
+      ${existing ? `<div class="osm-choice">
+        <label class="osm-radio"><input type="radio" name="osm-mode" value="add" checked><span><b>Add pages</b> — put the selected pages after the existing ${existing}. Use this for a page that was missed.</span></label>
+        <label class="osm-radio"><input type="radio" name="osm-mode" value="replace"><span><b>Replace whole sheet</b> — remove the current pages and use only the selected files. Marks stay; pen marks on the old pages are removed.</span></label></div>` : ''}
+      <div class="osm-actions"><button class="osm-btn" id="osm-u-cancel">Cancel</button><button class="osm-btn primary" id="osm-u-go" disabled>Upload</button></div></div>`;
+    document.body.appendChild(m);
+    let files: File[] = [];
+    const list = m.querySelector('#osm-files') as HTMLElement; const go = m.querySelector('#osm-u-go') as HTMLButtonElement;
+    const setFiles = (fl: FileList | File[]) => {
+        files = Array.from(fl).filter(f => f.type === 'application/pdf' || f.type.startsWith('image/'));
         files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        const pages: { url: string; path: string }[] = [];
-        for (const f of files) {
-            const imgs = f.type === 'application/pdf' ? await B.pdfToImages(f) : [f];
-            for (const img of imgs) {
-                let up = img; try { up = await B.processImage(img); } catch { /* use raw */ }
-                const path = `gradedReports/${me.uid}/${paper.id}/${studentUid}/osm_${Date.now()}_${pages.length}_${img.name.replace(/[^\w.\-]/g, '_')}`;
-                await B.storage.ref(path).put(up);
-                pages.push({ path, url: await B.storage.ref(path).getDownloadURL() });
-            }
+        list.innerHTML = files.map(f => `<li>${f.type === 'application/pdf' ? '📕' : '🖼️'} ${esc(f.name)} <small>${(f.size / 1048576).toFixed(1)} MB</small></li>`).join('');
+        go.disabled = !files.length;
+    };
+    (m.querySelector('#osm-file') as HTMLInputElement).addEventListener('change', e => setFiles((e.target as HTMLInputElement).files || []));
+    const drop = m.querySelector('#osm-drop') as HTMLElement;
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); setFiles((e as DragEvent).dataTransfer?.files || []); });
+    m.querySelector('#osm-u-cancel')!.addEventListener('click', () => m.remove());
+    go.addEventListener('click', async () => {
+        const mode = (m.querySelector('input[name="osm-mode"]:checked') as HTMLInputElement | null)?.value === 'replace' ? 'replace' : 'add';
+        if (mode === 'replace' && !confirm(`Replace the whole sheet for ${stu?.name || 'this student'}? The ${existing} current page(s) will be removed from this paper and pen marks on them are deleted. Marks already given are kept.`)) return;
+        go.disabled = true; m.remove();
+        await saveSheets(paper, stu, files, mode);
+        await onDone();
+    });
+}
+
+// Same storage location + PDF→image handling as the Exams answer-sheet upload:
+//   gradedReports/{teacherUid}/{paperId}/{studentUid}/{time}_{filename}   (PDF pages are already enhanced, photos are processed)
+async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | 'replace') {
+    const me = B.teacher()!; const studentUid = stu?.uid;
+    B.loading(true, 'Preparing pages…');
+    try {
+        const expanded: File[] = [];
+        for (const f of files) { if (f.type === 'application/pdf') expanded.push(...await B.pdfToImages(f)); else expanded.push(f); }
+        let n = 0;
+        const pages = await Promise.all(expanded.map(async (img, idx) => {
+            const up = img.name.includes('_page_') ? img : await B.processImage(img).catch(() => img);
+            const path = `gradedReports/${me.uid}/${paper.id}/${studentUid}/${img.lastModified || Date.now()}_${idx}_${img.name.replace(/[^\w.\-]/g, '_')}`;
+            await B.storage.ref(path).put(up);
+            const url = await B.storage.ref(path).getDownloadURL();
+            B.loading(true, `Uploading page ${++n} of ${expanded.length}…`);
+            return { path, url };
+        }));
+        const base = { studentUid, studentName: stu?.name || '', rollNumber: stu?.rollNumber || '', uploadedBy: me.uid, updatedAt: Date.now() };
+        if (mode === 'replace') {
+            await stuRef(paper, studentUid).set({ ...base, pages }, { merge: true });
+            // pen strokes were drawn on the old pages — remove them so they cannot land on the wrong page
+            const det = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
+            await Promise.all(det.docs.filter((d: any) => d.id.startsWith('osmInk_')).map((d: any) => d.ref.delete()));
+        } else {
+            // arrayUnion: two teachers adding pages to the same student at once can never drop each other's pages
+            await stuRef(paper, studentUid).set({ ...base, pages: B.FieldValue.arrayUnion(...pages) }, { merge: true });
         }
-        // arrayUnion: two teachers adding pages to the same student at once can never drop each other's pages
-        await stuRef(paper, studentUid).set({ studentUid, studentName: stu?.name || '', rollNumber: stu?.rollNumber || '', pages: B.FieldValue.arrayUnion(...pages), uploadedBy: me.uid, updatedAt: Date.now() }, { merge: true });
-        if (!quiet) B.toast(`Uploaded ${pages.length} page(s) for ${stu?.name || 'student'}.`, 'success');
+        B.toast(mode === 'replace' ? `Sheet replaced (${pages.length} page${pages.length > 1 ? 's' : ''}).` : `Added ${pages.length} page${pages.length > 1 ? 's' : ''} for ${stu?.name || 'student'}.`, 'success');
     } catch (e: any) { console.error('[osm] upload failed', e); B.toast('Upload failed: ' + e.message, 'error'); }
-    finally { if (!quiet) B.loading(false); }
+    finally { B.loading(false); }
 }
 
 function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: number[]) => Promise<void>) {
@@ -429,25 +402,28 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-seg"><button id="t-view" class="on" title="Scroll / look">☝ View</button><button id="t-pen" title="Pen">✏ Pen</button><button id="t-erase" title="Erase your strokes">⌫ Erase</button></div>
             <input type="color" id="t-color" value="${penColor}" title="Pen colour"><select id="t-w" title="Pen width"><option value="2">Thin</option><option value="3" selected>Medium</option><option value="6">Thick</option></select>
             <button class="osm-btn small" id="t-undo" title="Undo last stroke on the page you drew on">↶ Undo</button>
-            <div class="osm-seg zoom"><button id="z-out">−</button><span id="z-val">${zoom}%</span><button id="z-in">+</button></div>
+            <span class="osm-inkstat" id="osm-ink-status" title="Your pen marks are saved to your own layer on this sheet. Co-teachers see them in lighter ink; you can only erase your own."></span>
             <button class="osm-btn small" id="t-theme" title="Dark / light panel">${theme === 'dark' ? '☀' : '☾'}</button>
           </div>
         </div>
         <div class="osm-desk-main">
-          <div class="osm-pages" id="osm-pages"></div>
+          <div class="osm-pages-wrap">
+            <div class="osm-pages" id="osm-pages"></div>
+            <div class="osm-zoombar"><button id="z-out" title="Zoom out">−</button><span id="z-val">${zoom}%</span><button id="z-in" title="Zoom in">+</button><i></i><button id="z-fit" title="Fit page to width">Fit</button><i></i><span id="z-page">Page 1 of ${doc.pages?.length || 0}</span></div>
+          </div>
           <aside class="osm-side" id="osm-side"></aside>
         </div>
       </div>`;
     const desk = el.querySelector('#osm-desk') as HTMLElement;
     const pagesEl = el.querySelector('#osm-pages') as HTMLElement;
     const sideEl = el.querySelector('#osm-side') as HTMLElement;
-    el.querySelector('#osm-close')!.addEventListener('click', () => openPaperRoster(roster, paper, teachers));
+    el.querySelector('#osm-close')!.addEventListener('click', () => openPaper(roster, paper, teachers));
 
     // ---- pages + ink -------------------------------------------------------
     const pageWrap: HTMLElement[] = []; const pageDims: { w: number; h: number }[] = [];
     (doc.pages || []).forEach((p, i) => {
         const w = document.createElement('div'); w.className = 'osm-page'; w.dataset.i = String(i);
-        w.innerHTML = `<div class="osm-pg-label">Page ${i + 1} of ${doc.pages!.length}</div><div class="osm-pg-inner"><img alt="Page ${i + 1}" draggable="false"><svg class="osm-ink" xmlns="http://www.w3.org/2000/svg"></svg></div>`;
+        w.innerHTML = `<div class="osm-pg-label">Page ${i + 1} of ${doc.pages!.length} <span class="osm-pg-n"></span></div><div class="osm-pg-inner"><img alt="Page ${i + 1}" draggable="false"><svg class="osm-ink" xmlns="http://www.w3.org/2000/svg"></svg></div>`;
         pagesEl.appendChild(w); pageWrap.push(w);
         const img = w.querySelector('img') as HTMLImageElement;
         img.onload = () => { pageDims[i] = { w: img.naturalWidth, h: img.naturalHeight }; sizePage(i); renderInk(i); };
@@ -462,17 +438,30 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const svg = pageWrap[i].querySelector('svg') as SVGSVGElement; if (!svg) return;
         svg.innerHTML = Object.entries(inks).map(([tu, pg]) => (pg[String(i)] || []).map((s, si) =>
              `<path d="${esc(s.d)}" stroke="${esc(s.c)}" stroke-width="${Number(s.w) || 3}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${tu === me.uid ? 1 : 0.55}" data-t="${esc(tu)}" data-s="${si}"/>`).join('')).join('');
+        const mineN = (inks[me.uid]?.[String(i)] || []).length; const theirN = Object.entries(inks).reduce((a, [tu, pg]) => a + (tu === me.uid ? 0 : (pg[String(i)] || []).length), 0);
+        const lab = pageWrap[i].querySelector('.osm-pg-n') as HTMLElement | null; if (lab) lab.textContent = (mineN || theirN) ? `· ${mineN} pen mark${mineN === 1 ? '' : 's'} by you${theirN ? `, ${theirN} by co-teachers` : ''}` : '';
         svg.style.pointerEvents = tool === 'none' ? 'none' : 'auto';
         svg.style.cursor = tool === 'pen' ? 'crosshair' : tool === 'erase' ? 'cell' : 'default';
     }
     let inkTimer: any = null; let lastInkPage = -1;
-    let inkDirty = false;
+    let inkDirty = false; let inkSaving = 0;
+    const myStrokeCount = () => Object.values(inks[me.uid] || {}).reduce((a, arr: any) => a + arr.length, 0);
+    function setInkStatus(kind: 'idle' | 'dirty' | 'saving' | 'saved' | 'error') {
+        const e = el.querySelector('#osm-ink-status') as HTMLElement | null; if (!e) return;
+        const n = myStrokeCount();
+        e.className = 'osm-inkstat ' + kind;
+        e.textContent = kind === 'saving' ? '⏳ Saving pen marks…' : kind === 'dirty' ? '● Pen marks not saved yet' : kind === 'error' ? '⚠ Pen marks NOT saved — retrying' : kind === 'saved' ? `✓ Pen marks saved (${n})` : (n ? `✓ ${n} pen mark${n > 1 ? 's' : ''} saved` : 'Pen: nothing drawn yet');
+    }
     function flushInk() {
         clearTimeout(inkTimer); if (!inkDirty) return; inkDirty = false;
         const mine = inks[me.uid] || {};
-        inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, updatedAt: Date.now() }).catch(e => B.toast('Could not save pen marks: ' + e.message, 'error'));
+        inkSaving++; setInkStatus('saving');
+        inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, updatedAt: Date.now() })
+            .then(() => { inkSaving--; if (!inkSaving && !inkDirty) setInkStatus('saved'); })
+            .catch(e => { inkSaving--; inkDirty = true; setInkStatus('error'); B.toast('Could not save pen marks: ' + e.message, 'error'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 4000); });
     }
-    function saveInk() { inkDirty = true; clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 700); }
+    function saveInk() { inkDirty = true; setInkStatus('dirty'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 700); }
+    window.addEventListener('beforeunload', (e) => { if (inkDirty || inkSaving) { e.preventDefault(); e.returnValue = ''; } });
     window.addEventListener('pagehide', flushInk);
     // drawing
     pagesEl.addEventListener('pointerdown', (ev: PointerEvent) => {
@@ -504,7 +493,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         try {
             const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
             snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => a.d === c.d))]; }); } else inks[tu] = d.data().pages || {}; } });
-            pageWrap.forEach((_, i) => renderInk(i));
+            pageWrap.forEach((_, i) => renderInk(i)); setInkStatus('idle');
         } catch (e) { console.warn('[osm] ink load', e); }
     })();
 
@@ -519,9 +508,16 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     (el.querySelector('#t-color') as HTMLInputElement).addEventListener('input', e => { penColor = (e.target as HTMLInputElement).value; });
     (el.querySelector('#t-w') as HTMLSelectElement).addEventListener('change', e => { penW = Number((e.target as HTMLSelectElement).value); });
     el.querySelector('#t-undo')!.addEventListener('click', () => { if (lastInkPage < 0) return; const arr = inks[me.uid]?.[String(lastInkPage)]; if (arr?.length) { arr.pop(); renderInk(lastInkPage); saveInk(); } });
-    const setZoom = (z: number) => { zoom = Math.max(50, Math.min(250, z)); (el.querySelector('#z-val') as HTMLElement).textContent = zoom + '%'; try { localStorage.setItem('osm-zoom', String(zoom)); } catch { /* */ } pageWrap.forEach((_, i) => sizePage(i)); };
+    const setZoom = (z: number) => { zoom = Math.max(40, Math.min(300, z)); (el.querySelector('#z-val') as HTMLElement).textContent = zoom + '%'; try { localStorage.setItem('osm-zoom', String(zoom)); } catch { /* */ } pageWrap.forEach((_, i) => sizePage(i)); };
     el.querySelector('#z-in')!.addEventListener('click', () => setZoom(zoom + 10));
     el.querySelector('#z-out')!.addEventListener('click', () => setZoom(zoom - 10));
+    el.querySelector('#z-fit')!.addEventListener('click', () => setZoom(100));
+    const pageInd = el.querySelector('#z-page') as HTMLElement;
+    pagesEl.addEventListener('scroll', () => {
+        const mid = pagesEl.getBoundingClientRect().top + pagesEl.clientHeight / 3; let cur = 0;
+        pageWrap.forEach((w, i) => { if (w.getBoundingClientRect().top <= mid) cur = i; });
+        pageInd.textContent = `Page ${cur + 1} of ${pageWrap.length}`;
+    }, { passive: true });
     el.querySelector('#t-theme')!.addEventListener('click', () => { const dk = desk.classList.toggle('dark'); try { localStorage.setItem('osm-theme', dk ? 'dark' : 'light'); } catch { /* */ } (el.querySelector('#t-theme') as HTMLElement).textContent = dk ? '☀' : '☾'; });
 
     // ---- marks panel -------------------------------------------------------
@@ -529,6 +525,12 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     function flushMarks() { Object.keys(pendingRun).forEach(k => { const i = Number(k); clearTimeout(saveTimers[i]); const f = pendingRun[i]; delete pendingRun[i]; f(); }); }
     let savingCount = 0; let statusEl: HTMLElement | null = null;
     const setStatus = (t: string, cls = '') => { if (statusEl) { statusEl.textContent = t; statusEl.className = 'osm-save ' + cls; } };
+    function chipValues(max: number): number[] {
+        if (!(max > 0)) return [];
+        const step = max <= 10 ? 0.5 : 1; const out: number[] = [];
+        for (let v = 0; v <= max + 1e-9; v += step) out.push(Math.round(v * 2) / 2);
+        return out.length <= 41 ? out : [];
+    }
     function editable(i: number) { return unlockAll || myIdx.has(i); }
     function renderSide() {
         const prevScroll = (sideEl.querySelector('#osm-qs') as HTMLElement | null)?.scrollTop ?? 0;
@@ -555,10 +557,12 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                 <div class="osm-q-head"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${hasAssign && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}
                   <span class="osm-max">out of ${fmt1(max)}</span></div>
                 <div class="osm-q-row">
-                  <button class="osm-mini" data-act="zero" ${mine ? '' : 'disabled'} title="Give 0">0</button>
+                  <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
                   <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m ? m.v : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
-                  <button class="osm-mini" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
+                  <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
+                  <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
                 </div>
+                ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && m.v === v ? 'sel' : ''}" data-v="${v}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
                 ${m && m.by !== me.uid ? `<div class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</div>` : ''}
                 ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
                 <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
@@ -588,8 +592,16 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             inp.addEventListener('blur', () => { const d = doc.marks?.[qk(i)]; if (d && inp.value.trim() !== '') inp.value = String(d.v); });
         });
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-mini').forEach(b => b.addEventListener('click', () => {
+            const row = b.closest('.osm-q') as HTMLElement; const i = Number(row.dataset.i); const inp = row.querySelector('.osm-in') as HTMLInputElement; const max = qMax(paper.questions[i]);
+            const cur = doc.marks?.[qk(i)]?.v; let v: number;
+            if (b.dataset.act === 'full') v = max;
+            else if (b.dataset.act === 'inc') v = Math.min(max || Infinity, (cur ?? 0) + 0.5);
+            else v = Math.max(0, (cur ?? 0) - 0.5);
+            inp.value = String(v); queueSave(i, inp.value, inp, true);
+        }));
+        sideEl.querySelectorAll<HTMLButtonElement>('.osm-cv').forEach(b => b.addEventListener('click', () => {
             const row = b.closest('.osm-q') as HTMLElement; const i = Number(row.dataset.i); const inp = row.querySelector('.osm-in') as HTMLInputElement;
-            inp.value = b.dataset.act === 'full' ? String(qMax(paper.questions[i])) : '0'; queueSave(i, inp.value, inp, true);
+            inp.value = b.dataset.v!; queueSave(i, inp.value, inp, true);
         }));
         sideEl.querySelector('#osm-given')!.addEventListener('click', toggleDone);
         sideEl.querySelector('#osm-prev')?.addEventListener('click', () => pos > 0 && openDesk(roster, paper, teachers, order[pos - 1], order));
@@ -634,7 +646,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const n = sideEl.querySelector('.osm-score-num'); if (n) n.innerHTML = `${fmt1(sc.total)}<small> / ${dt || '—'}</small>`;
         const mk = sideEl.querySelector('#osm-marked'); if (mk) mk.textContent = `${sc.marked}/${sc.count}`;
         const bar = sideEl.querySelector('.osm-bar i') as HTMLElement | null; if (bar) bar.style.width = (dt ? Math.min(100, sc.total / dt * 100) : 0) + '%';
-        sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
+        sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); { const cur = doc.marks?.[qk(i)]?.v; r.querySelectorAll<HTMLElement>('.osm-cv').forEach(c => c.classList.toggle('sel', cur !== undefined && Number(c.dataset.v) === cur)); } r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
     }
     async function toggleDone() {
         const iAmDone = !!doc.done?.[me.uid];
@@ -681,68 +693,72 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     stopListeners.push(() => { flushInk(); window.removeEventListener('pagehide', flushInk); Object.keys(saveTimers).forEach(k => { /* pending mark saves are flushed below */ }); flushMarks(); });
 }
 
-// ───────────────────────── styles ─────────────────────────
+// ───────────────────────── styles (ClassMap look: Poppins, blue→purple gradient, soft rounded cards) ─────────────────────────
 function injectStyle() {
     if (document.getElementById('osm-style')) return;
     const s = document.createElement('style'); s.id = 'osm-style';
     s.textContent = `
-#osm-root{position:fixed;inset:0;z-index:9000;background:var(--osm-bg);color:var(--osm-fg);display:none;overflow:auto;font-family:'Inter','Segoe UI',system-ui,sans-serif;
- --osm-bg:#f6f5f1;--osm-card:#ffffff;--osm-fg:#23262b;--osm-muted:#6b7280;--osm-line:#e4e2db;--osm-accent:#2f6f5e;--osm-accent-fg:#fff;--osm-warn:#b45309;--osm-bad:#b42318;--osm-ok:#1f7a4d;--osm-soft:#eef3f0}
+#osm-root{position:fixed;inset:0;z-index:9000;background:var(--osm-bg);color:var(--osm-fg);display:none;overflow:auto;font-family:'Poppins',system-ui,sans-serif;
+ --osm-bg:#f5f7fa;--osm-card:#ffffff;--osm-fg:#34495e;--osm-muted:#7f8c8d;--osm-line:#e3e8f0;--osm-accent:#2575fc;--osm-accent2:#6a11cb;--osm-grad:linear-gradient(135deg,#2575fc 0%,#6a11cb 100%);--osm-accent-fg:#fff;--osm-warn:#b45309;--osm-bad:#e74c3c;--osm-ok:#1e9e5a;--osm-soft:#eef3ff;--osm-shadow:0 4px 18px rgba(37,117,252,.10)}
 body.osm-active{overflow:hidden}
 #osm-root *{box-sizing:border-box}
-.osm-top,.osm-desk-top{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--osm-card);border-bottom:1px solid var(--osm-line);position:sticky;top:0;z-index:5}
-.osm-titlebox{flex:1;min-width:0}.osm-title{font-size:1.15rem;font-weight:650}.osm-sub{font-size:.85rem;color:var(--osm-muted)}
-.osm-body{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
-.osm-btn{border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:10px;padding:9px 15px;font-size:.92rem;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
-.osm-btn:hover{background:var(--osm-soft)}.osm-btn.primary{background:var(--osm-accent);color:var(--osm-accent-fg);border-color:var(--osm-accent)}.osm-btn.primary:hover{filter:brightness(1.08)}
-.osm-btn.ghost{border-color:transparent;background:transparent}.osm-btn.small{padding:6px 11px;font-size:.84rem}.osm-btn.wide{width:100%;justify-content:center;padding:11px;font-size:1rem}.osm-btn:disabled{opacity:.45;cursor:not-allowed}
-.osm-toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}.osm-toolbar h2{margin:0;font-size:1.1rem}.osm-toolbar-btns{display:flex;gap:8px;flex-wrap:wrap}
-.osm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
-.osm-card{text-align:left;background:var(--osm-card);border:1px solid var(--osm-line);border-radius:14px;padding:18px;cursor:pointer;font-family:inherit;color:inherit}.osm-card:hover{border-color:var(--osm-accent);box-shadow:0 2px 10px rgba(0,0,0,.06)}
-.osm-card-title{font-weight:650;font-size:1.02rem;margin-bottom:6px}
+.osm-top,.osm-desk-top{display:flex;align-items:center;gap:16px;padding:14px 22px;background:var(--osm-grad);color:#fff;position:sticky;top:0;z-index:5;box-shadow:0 2px 14px rgba(106,17,203,.25)}
+.osm-titlebox{flex:1;min-width:0}.osm-title{font-size:1.15rem;font-weight:600}.osm-top .osm-sub,.osm-desk-top .osm-sub{color:rgba(255,255,255,.82)}.osm-sub{font-size:.82rem;color:var(--osm-muted)}
+.osm-body{max-width:1180px;margin:0 auto;padding:24px 20px 60px}
+.osm-btn{border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:12px;padding:9px 16px;font-size:.88rem;cursor:pointer;font-family:inherit;font-weight:500;display:inline-flex;align-items:center;gap:6px;transition:all .15s}
+.osm-btn:hover{background:var(--osm-soft);border-color:#c9d8fb}.osm-btn.primary{background:var(--osm-grad);color:#fff;border-color:transparent;box-shadow:0 3px 10px rgba(37,117,252,.3)}.osm-btn.primary:hover{filter:brightness(1.07);background:var(--osm-grad)}
+.osm-btn.ghost{border-color:transparent;background:rgba(255,255,255,.16);color:#fff}.osm-btn.ghost:hover{background:rgba(255,255,255,.28)}.osm-btn.small{padding:6px 12px;font-size:.82rem;border-radius:10px}.osm-btn.wide{width:100%;justify-content:center;padding:12px;font-size:1rem;border-radius:14px}.osm-btn:disabled{opacity:.45;cursor:not-allowed}
+.osm-toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}.osm-toolbar-btns{display:flex;gap:8px;flex-wrap:wrap}
 .osm-empty{text-align:center;padding:60px 20px;color:var(--osm-muted)}.osm-center{display:flex;justify-content:center;padding:80px}
 .osm-spin{width:34px;height:34px;border-radius:50%;border:3px solid var(--osm-line);border-top-color:var(--osm-accent);animation:osmspin .8s linear infinite}@keyframes osmspin{to{transform:rotate(360deg)}}
-.osm-form{max-width:760px;background:var(--osm-card);border:1px solid var(--osm-line);border-radius:14px;padding:22px;display:flex;flex-direction:column;gap:14px}
-.osm-form label{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:.9rem}.osm-form input{padding:10px 12px;border:1px solid var(--osm-line);border-radius:9px;font-size:.95rem;font-family:inherit;background:var(--osm-bg);color:var(--osm-fg)}
-.osm-note{background:var(--osm-soft);border-radius:10px;padding:10px 14px;font-size:.88rem}.osm-actions{display:flex;gap:10px;justify-content:flex-end}
-.osm-qtable{max-height:340px;overflow:auto;border:1px solid var(--osm-line);border-radius:10px;margin-top:8px}.osm-qtable table,.osm-table{width:100%;border-collapse:collapse;font-size:.88rem}
-.osm-qtable th,.osm-qtable td,.osm-table th,.osm-table td{padding:8px 12px;border-bottom:1px solid var(--osm-line);text-align:left;vertical-align:middle}.osm-table th,.osm-qtable th{background:var(--osm-soft);position:sticky;top:0;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--osm-muted)}
-.osm-table-wrap{background:var(--osm-card);border:1px solid var(--osm-line);border-radius:14px;overflow:auto}
-.osm-kpis{display:flex;gap:12px}.osm-kpi{background:var(--osm-card);border:1px solid var(--osm-line);border-radius:12px;padding:10px 18px;display:flex;flex-direction:column}.osm-kpi b{font-size:1.4rem}.osm-kpi span{font-size:.78rem;color:var(--osm-muted)}
-.osm-badge{padding:3px 10px;border-radius:99px;font-size:.78rem;font-weight:600;background:#eceae4;color:#555;white-space:nowrap}.osm-badge.ready{background:#d7efe3;color:var(--osm-ok)}.osm-badge.prog{background:#fdf0d5;color:var(--osm-warn)}.osm-badge.nosheet{background:#f0efea;color:#999}
-.osm-chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:.76rem;border:1px solid var(--osm-line);color:var(--osm-muted);margin-right:4px}.osm-chip.on{background:#d7efe3;color:var(--osm-ok);border-color:#b8e0cb}
-.osm-link{color:var(--osm-accent);cursor:pointer;font-size:.84rem;margin-left:6px;text-decoration:underline}.osm-muted{color:var(--osm-muted)}
-.osm-banner{padding:12px 16px;border-radius:10px;margin:12px 0}.osm-banner.ok{background:#d7efe3;color:var(--osm-ok)}.osm-banner.small{padding:8px 12px;font-size:.88rem;margin:8px 0}
-.osm-teachers{margin-top:20px}
-.osm-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9500;display:flex;align-items:center;justify-content:center;padding:20px}.osm-modal-card{background:var(--osm-card,#fff);color:#23262b;border-radius:16px;padding:22px;max-width:680px;width:100%;max-height:88vh;overflow:auto}
-.osm-range{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}.osm-checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:6px;margin:10px 0}.osm-check{border:1px solid #e4e2db;border-radius:8px;padding:6px 8px;font-size:.88rem;display:flex;gap:6px;align-items:center;cursor:pointer}.osm-check small{color:#888;margin-left:auto}
+.osm-table-wrap{background:var(--osm-card);border:1px solid var(--osm-line);border-radius:18px;overflow:auto;box-shadow:var(--osm-shadow)}
+.osm-table{width:100%;border-collapse:collapse;font-size:.88rem}.osm-table th,.osm-table td{padding:11px 14px;border-bottom:1px solid var(--osm-line);text-align:left;vertical-align:middle}.osm-table tbody tr:hover{background:#fafbff}.osm-table tbody tr:last-child td{border-bottom:0}
+.osm-table th{background:var(--osm-soft);position:sticky;top:0;font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;color:#5b6b86;font-weight:600}.osm-nm{font-weight:500}.osm-pgs{font-weight:500}
+.osm-kpis{display:flex;gap:12px}.osm-kpi{background:var(--osm-card);border:1px solid var(--osm-line);border-radius:16px;padding:10px 20px;display:flex;flex-direction:column;box-shadow:var(--osm-shadow)}.osm-kpi b{font-size:1.5rem;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1.2}.osm-kpi b small{font-size:.9rem;color:var(--osm-muted);-webkit-text-fill-color:var(--osm-muted);font-weight:500}.osm-kpi span{font-size:.76rem;color:var(--osm-muted)}
+.osm-badge{padding:3px 11px;border-radius:99px;font-size:.74rem;font-weight:600;background:#eceff5;color:#5b6b86;white-space:nowrap}.osm-badge.ready{background:#d9f3e6;color:var(--osm-ok)}.osm-badge.prog{background:#fff0d6;color:var(--osm-warn)}.osm-badge.nosheet{background:#f1f2f6;color:#9aa3b2}
+.osm-chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:.74rem;border:1px solid var(--osm-line);color:var(--osm-muted);margin:1px 4px 1px 0}.osm-chip.on{background:#d9f3e6;color:var(--osm-ok);border-color:#b8e6cd}
+button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;font-size:.82rem;margin-left:6px;text-decoration:underline;font-family:inherit;padding:0}.osm-muted{color:var(--osm-muted)}
+.osm-banner{padding:12px 16px;border-radius:14px;margin:0 0 14px}.osm-banner.ok{background:#d9f3e6;color:var(--osm-ok)}.osm-banner.small{padding:8px 12px;font-size:.86rem;margin:8px 0}
+.osm-modal{position:fixed;inset:0;background:rgba(20,24,45,.5);z-index:9500;display:flex;align-items:center;justify-content:center;padding:20px;font-family:'Poppins',system-ui,sans-serif}.osm-modal-card{background:#fff;color:#34495e;border-radius:20px;padding:24px;max-width:640px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}.osm-modal-card h3{margin:0 0 4px}
+.osm-modal .osm-btn{background:#fff;color:#34495e}.osm-modal .osm-btn.primary{background:var(--osm-grad,linear-gradient(135deg,#2575fc,#6a11cb));color:#fff}.osm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.osm-drop{border:2px dashed #b9c8ee;border-radius:16px;padding:26px;text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center;margin:14px 0;background:#f7f9ff;color:#5b6b86}.osm-drop.over{background:#e8f0ff;border-color:#2575fc}
+.osm-files{list-style:none;margin:0 0 6px;padding:0;max-height:140px;overflow:auto;font-size:.86rem}.osm-files li{padding:4px 0;border-bottom:1px solid #eef1f7}.osm-files small{color:#8a96a8}
+.osm-choice{display:flex;flex-direction:column;gap:8px;margin-top:10px}.osm-radio{display:flex;gap:10px;align-items:flex-start;border:1px solid #e3e8f0;border-radius:12px;padding:10px 12px;font-size:.86rem;cursor:pointer}.osm-radio:has(input:checked){border-color:#2575fc;background:#f2f6ff}.osm-radio input{margin-top:4px}
+.osm-range{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}.osm-checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:6px;margin:10px 0}.osm-check{border:1px solid #e3e8f0;border-radius:10px;padding:6px 8px;font-size:.86rem;display:flex;gap:6px;align-items:center;cursor:pointer}.osm-check small{color:#888;margin-left:auto}
 /* desk */
-.osm-desk{--osm-bg:#f6f5f1;position:fixed;inset:0;display:flex;flex-direction:column;background:#3a3f47}
-.osm-desk.dark{--osm-bg:#1d2025;--osm-card:#262a31;--osm-fg:#e6e8eb;--osm-muted:#9aa1ab;--osm-line:#363b44;--osm-soft:#2e333b;--osm-accent:#5fb89c;--osm-accent-fg:#0d1f19}
-.osm-desk-top{flex-wrap:wrap;background:var(--osm-card);color:var(--osm-fg)}
+.osm-desk{--osm-bg:#f5f7fa;position:fixed;inset:0;display:flex;flex-direction:column;background:#2b3040}
+.osm-desk.dark{--osm-bg:#1b1f2b;--osm-card:#252a38;--osm-fg:#e6e9f2;--osm-muted:#9aa3b8;--osm-line:#363d50;--osm-soft:#2d3446;--osm-accent:#6ea0ff}
+.osm-desk-top{flex-wrap:wrap;padding:10px 20px}
 .osm-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.osm-seg{display:inline-flex;border:1px solid var(--osm-line);border-radius:10px;overflow:hidden}.osm-seg button{border:0;background:var(--osm-card);color:var(--osm-fg);padding:7px 12px;cursor:pointer;font-size:.86rem;font-family:inherit}.osm-seg button.on{background:var(--osm-accent);color:var(--osm-accent-fg)}.osm-seg.zoom span{padding:7px 8px;min-width:52px;text-align:center;font-size:.84rem;background:var(--osm-card);color:var(--osm-fg)}
-.osm-tools input[type=color]{width:34px;height:32px;border:1px solid var(--osm-line);border-radius:8px;padding:2px;background:var(--osm-card)}.osm-tools select{padding:6px;border-radius:8px;border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg)}
+.osm-seg{display:inline-flex;border:1px solid rgba(255,255,255,.35);border-radius:11px;overflow:hidden}.osm-seg button{border:0;background:rgba(255,255,255,.12);color:#fff;padding:7px 13px;cursor:pointer;font-size:.84rem;font-family:inherit}.osm-seg button.on{background:#fff;color:#2575fc;font-weight:600}
+.osm-tools input[type=color]{width:34px;height:32px;border:1px solid rgba(255,255,255,.4);border-radius:9px;padding:2px;background:rgba(255,255,255,.2)}.osm-tools select{padding:6px;border-radius:9px;border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.18);color:#fff;font-family:inherit}.osm-tools select option{color:#222}
+.osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
+.osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
-.osm-pages{flex:1;overflow:auto;padding:18px 24px 80px;background:#3a3f47;display:flex;flex-direction:column;align-items:center;gap:18px}
-.osm-page{width:100%;display:flex;flex-direction:column;align-items:center}.osm-pg-label{color:#aeb4bd;font-size:.78rem;margin-bottom:6px;align-self:flex-start;max-width:100%}
-.osm-pg-inner{position:relative;max-width:none;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.35)}.osm-pg-inner img{width:100%;display:block;user-select:none}.osm-ink{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
-.osm-side{width:370px;max-width:42vw;background:var(--osm-card);color:var(--osm-fg);border-left:1px solid var(--osm-line);display:flex;flex-direction:column;min-height:0}
-.osm-score{padding:10px 18px 8px;border-bottom:1px solid var(--osm-line)}.osm-score-num{font-size:2rem;font-weight:700;line-height:1.1}.osm-score-num small{font-size:1rem;font-weight:500;color:var(--osm-muted)}
-.osm-bar{height:6px;background:var(--osm-line);border-radius:6px;margin:8px 0;overflow:hidden}.osm-bar i{display:block;height:100%;background:var(--osm-accent);transition:width .25s}
-.osm-save{font-size:.8rem}.osm-save.ok{color:var(--osm-ok)}.osm-save.bad{color:var(--osm-bad)}
-.osm-unlock{padding:8px 18px;font-size:.82rem;color:var(--osm-muted);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--osm-line)}.osm-pad{padding:8px 18px}
+.osm-pages-wrap{flex:1;position:relative;min-width:0;display:flex}
+.osm-pages{flex:1;overflow:auto;padding:18px 24px 90px;background:#2b3040;display:flex;flex-direction:column;align-items:center;gap:18px}
+.osm-zoombar{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:rgba(30,34,50,.92);color:#fff;border-radius:99px;padding:5px 8px;box-shadow:0 6px 24px rgba(0,0,0,.4);backdrop-filter:blur(6px);font-size:.84rem;z-index:3}
+.osm-zoombar button{border:0;background:transparent;color:#fff;font-size:1.1rem;min-width:34px;height:34px;border-radius:99px;cursor:pointer;font-family:inherit}.osm-zoombar button:hover{background:rgba(255,255,255,.18)}.osm-zoombar span{min-width:48px;text-align:center}.osm-zoombar #z-page{min-width:90px;color:#b9c2da}.osm-zoombar i{width:1px;height:20px;background:rgba(255,255,255,.25);margin:0 4px}
+.osm-page{width:100%;display:flex;flex-direction:column;align-items:center}.osm-pg-label{color:#aab3c9;font-size:.76rem;margin-bottom:6px;align-self:flex-start;max-width:100%}.osm-pg-n{color:#8fb4ff}
+.osm-pg-inner{position:relative;max-width:none;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.4);border-radius:3px}.osm-pg-inner img{width:100%;display:block;user-select:none}.osm-ink{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+.osm-side{width:410px;max-width:44vw;background:var(--osm-card);color:var(--osm-fg);border-left:1px solid var(--osm-line);display:flex;flex-direction:column;min-height:0}
+.osm-score{padding:12px 18px 10px;border-bottom:1px solid var(--osm-line)}.osm-score-num{font-size:2.1rem;font-weight:700;line-height:1.1;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent}.osm-score-num small{font-size:1rem;font-weight:500;color:var(--osm-muted);-webkit-text-fill-color:var(--osm-muted)}
+.osm-bar{height:7px;background:var(--osm-line);border-radius:7px;margin:8px 0;overflow:hidden}.osm-bar i{display:block;height:100%;background:var(--osm-grad);transition:width .25s}
+.osm-save{font-size:.78rem}.osm-save.ok{color:var(--osm-ok)}.osm-save.bad{color:var(--osm-bad)}
+.osm-unlock{padding:8px 18px;font-size:.8rem;color:var(--osm-muted);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--osm-line)}.osm-pad{padding:8px 18px}
 .osm-qs{flex:1;overflow:auto;padding:8px 12px}
-.osm-q{border:1px solid var(--osm-line);border-radius:12px;padding:8px 12px;margin:6px 0;background:var(--osm-card)}.osm-q.has{border-left:4px solid var(--osm-accent)}.osm-q.other{opacity:.65}.osm-q.loser{opacity:.55;text-decoration:none}.osm-q.flash{box-shadow:0 0 0 3px var(--osm-warn)}
-.osm-q-head{display:flex;align-items:center;gap:8px}.osm-qn{font-weight:700;font-size:1rem}.osm-max{margin-left:auto;font-size:.82rem;color:var(--osm-muted)}
-.osm-tag{font-size:.68rem;padding:1px 7px;border-radius:99px;background:#ece6f7;color:#5b3fa0}.osm-tag.mine{background:#d7efe3;color:var(--osm-ok)}
-.osm-q-row{display:flex;gap:8px;margin-top:8px;align-items:center}
-.osm-in{flex:1;min-width:0;font-size:1.35rem;font-weight:650;text-align:center;padding:8px;border:2px solid var(--osm-line);border-radius:10px;background:var(--osm-bg);color:var(--osm-fg);font-family:inherit}.osm-in:focus{outline:none;border-color:var(--osm-accent)}.osm-in:disabled{background:transparent;border-style:dashed}
-.osm-mini{padding:9px 12px;border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:9px;cursor:pointer;font-size:.88rem;font-family:inherit}.osm-mini:hover:not(:disabled){background:var(--osm-soft)}.osm-mini:disabled{opacity:.35}
-.osm-by{font-size:.76rem;color:var(--osm-muted);margin-top:6px}
+.osm-q{border:1px solid var(--osm-line);border-radius:16px;padding:10px 12px;margin:8px 0;background:var(--osm-card)}.osm-q.has{border-left:4px solid var(--osm-accent)}.osm-q.other{opacity:.65}.osm-q.loser{opacity:.55}.osm-q.flash{box-shadow:0 0 0 3px #f5a623}
+.osm-q-head{display:flex;align-items:center;gap:8px}.osm-qn{font-weight:700;font-size:1.02rem}.osm-max{margin-left:auto;font-size:.8rem;color:var(--osm-muted)}
+.osm-tag{font-size:.66rem;padding:1px 8px;border-radius:99px;background:#ece6f7;color:#5b3fa0}.osm-tag.mine{background:#d9f3e6;color:var(--osm-ok)}
+.osm-q-row{display:flex;gap:6px;margin-top:8px;align-items:stretch}
+.osm-in{flex:1;min-width:0;font-size:1.4rem;font-weight:700;text-align:center;padding:6px;border:2px solid var(--osm-line);border-radius:12px;background:var(--osm-bg);color:var(--osm-fg);font-family:inherit}.osm-in:focus{outline:none;border-color:var(--osm-accent)}.osm-in:disabled{background:transparent;border-style:dashed}
+.osm-mini{padding:0 12px;min-width:44px;border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:12px;cursor:pointer;font-size:.9rem;font-family:inherit;font-weight:600}.osm-mini.step{font-size:1.4rem;line-height:1;min-width:48px}.osm-mini.full{background:var(--osm-soft);color:var(--osm-accent)}.osm-mini:hover:not(:disabled){background:var(--osm-soft);border-color:var(--osm-accent)}.osm-mini:disabled{opacity:.35}
+.osm-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.osm-cv{min-width:42px;height:38px;padding:0 6px;border:1.5px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:10px;cursor:pointer;font-size:.9rem;font-weight:600;font-family:inherit}.osm-cv:hover:not(:disabled){border-color:var(--osm-accent);background:var(--osm-soft)}.osm-cv.sel{background:var(--osm-grad);color:#fff;border-color:transparent;box-shadow:0 2px 8px rgba(37,117,252,.35)}.osm-cv:disabled{opacity:.35}
+.osm-by{font-size:.74rem;color:var(--osm-muted);margin-top:6px}
 .osm-det{margin-top:8px;font-size:.84rem}.osm-det summary{cursor:pointer;color:var(--osm-muted)}.osm-qtext,.osm-ans,.osm-ci{margin-top:6px;line-height:1.5;white-space:pre-wrap}.osm-ci{color:var(--osm-muted);font-size:.8rem}
-.osm-foot{border-top:1px solid var(--osm-line);padding:8px 12px;display:flex;flex-direction:column;gap:6px}.osm-doneline{display:flex;flex-wrap:wrap;gap:3px}.osm-doneline .osm-chip{font-size:.7rem;padding:1px 7px;margin-right:0}.osm-nav{display:flex;justify-content:space-between;gap:8px}
-@media (max-width:900px){.osm-side{width:320px}.osm-kpis{display:none}}
+.osm-foot{border-top:1px solid var(--osm-line);padding:10px 12px;display:flex;flex-direction:column;gap:7px}.osm-doneline{display:flex;flex-wrap:wrap;gap:3px}.osm-doneline .osm-chip{font-size:.7rem;padding:1px 7px;margin-right:0}.osm-nav{display:flex;justify-content:space-between;gap:8px}
+@media (max-width:900px){.osm-side{width:340px}.osm-kpis{display:none}}
 `;
     document.head.appendChild(s);
 }

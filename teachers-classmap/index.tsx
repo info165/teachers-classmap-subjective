@@ -5,7 +5,7 @@
 import { GoogleGenAI, GenerateContentResponse, Part, Type, Modality } from "@google/genai";
 import { marked } from 'marked';
 import type firebase from 'firebase/compat/app';
-import { initOsm, openOsmHome, closeOsm } from './src/osm/osm';
+import { initOsm, closeOsm, renderOsmExamRows, osmTitleExists } from './src/osm/osm';
 
 
 // --- START OF CONFIGURABLE API ENDPOINTS ---
@@ -5138,7 +5138,6 @@ classPageHeaderEl.innerHTML = `
     
         // 2. Attach Event Listeners for buttons
         (document.getElementById('class-page-create-hw') as HTMLButtonElement).onclick = () => window.switchHomeworkTab('myq');
-        { const osmBtn = document.getElementById('class-page-open-osm') as HTMLButtonElement | null; if (osmBtn) osmBtn.onclick = () => openOsmHome(roster as any); }
         (document.getElementById('class-page-create-as') as HTMLButtonElement).onclick = () => {
         updateUIVisibility('teacher_assessment_creation_form');
         // Default to AI tab and set it up
@@ -5190,6 +5189,12 @@ const createdAssessments = allCreatedAssessments;
 renderClassPageSection('assessment', roster, gradedAssessments, createdAssessments);
 
 renderInlineItemList('as', createdAssessments, 'assessment');
+// Teacher Marking (opt-in per school): papers created with the Exams "+" button show in this same box,
+// and the Total-created / Class-average tiles are hidden.
+if (featureFlags['teacherManualMarking'] === true) {
+    const st = document.querySelector('#class-page-assessment .class-page-stats') as HTMLElement | null; if (st) st.style.display = 'none';
+    try { await renderOsmExamRows(document.getElementById('class-page-as-list') as HTMLElement, roster as any); } catch (e) { console.warn('[osm] could not list papers', e); }
+}
         })();
         
         await Promise.all([homeworkPromise, assessmentPromise]);
@@ -13205,7 +13210,7 @@ studentPortfolioView: [...Array.from(document.querySelectorAll<HTMLElement>('but
     {
         const osmOn = featureFlags['teacherManualMarking'] === true;
         const osmCard = document.getElementById('class-page-osm');
-        if (osmCard) osmCard.style.display = osmOn ? '' : 'none';
+        if (osmCard) osmCard.style.display = 'none';   // retired: papers now live in the Exams box
         if (osmOn) {
             const hw = document.getElementById('class-page-homework'); if (hw) hw.style.display = 'none';
             const ws = document.getElementById('class-page-remedial'); if (ws) ws.style.display = 'none';
@@ -21283,6 +21288,20 @@ if (typeof temporaryAssessmentData.totalMarks === 'number' && temporaryAssessmen
     }, 0);
 }
 
+   // Teacher Marking (opt-in per school): the same Exams "+" form creates the paper, but it is saved as an on-screen-marking paper.
+   const osmMode = featureFlags['teacherManualMarking'] === true;
+   if (osmMode) {
+       if (!(typeof temporaryAssessmentData.totalMarks === 'number' && temporaryAssessmentData.totalMarks > 0)) {
+           toggleLoading(false);
+           showFeedbackMessage("Please enter the paper's Total Marks (on the previous screen) — Teacher Marking uses it as the paper total.", "error", true);
+           return;
+       }
+       if (currentClassForHomeworkCreation && await osmTitleExists(currentClassForHomeworkCreation as any, temporaryAssessmentData.assessmentTitle || '')) {
+           toggleLoading(false);
+           showFeedbackMessage("A paper with this title already exists for this class (co-teachers share one paper). Open it from the Exams box, or use a different title.", "error", true);
+           return;
+       }
+   }
    const newAssessmentRef = fbFirestore.collection('teachers').doc(teacherProfile.uid).collection('assessmentHistory').doc();
 const newAssessmentId = newAssessmentRef.id; // Get the unique ID from the reference.
    
@@ -21306,21 +21325,28 @@ const assessmentToSave: CreatedAssessment = {
         // --- ADD THESE TWO LINES ---
         selectedChapters: temporaryAssessmentData.selectedChapters || [],
         topics: temporaryAssessmentData.topics || [],
-        generalInstructions: currentGeneralInstructions 
-    };
+        generalInstructions: currentGeneralInstructions,
+        ...(osmMode ? { assessmentMode: 'osm' } : {})
+    } as CreatedAssessment;
     
     const finalAssessment = sanitizeObjectForFirestore(assessmentToSave);
 
     try {
 await newAssessmentRef.set(finalAssessment); 
 
-// Update in-memory cache immediately
-allCreatedAssessments.push(assessmentToSave);
+// Update in-memory cache immediately (Teacher Marking papers are kept out of the normal exam caches)
+if (!osmMode) allCreatedAssessments.push(assessmentToSave);
 
 showFeedbackMessage("Assessment created successfully!", "success");
 temporaryAssessmentData = {};
 
         temporaryAssessmentData = {};
+        if (osmMode) {
+            showFeedbackMessage("Paper created. Open it from the Exams box to add each student's answer sheet and start marking.", "success");
+            if (currentClassForHomeworkCreation) updateUIVisibility('teacher_class_dashboard', { roster: currentClassForHomeworkCreation });
+            else updateUIVisibility('teacher_dashboard');
+            return;
+        }
         // Show success with navigation options
         const successBanner = document.createElement('div');
         successBanner.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;background:#1a1a2e;color:white;border-radius:16px;padding:20px 24px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;align-items:center;gap:16px;min-width:360px;animation:slideInRight 0.4s cubic-bezier(0.34,1.56,0.64,1);font-family:'Inter',system-ui,sans-serif;`;
@@ -30727,7 +30753,7 @@ initOsm({
     fmtMath: (text) => formatMathExpressions(text),
     typeset: (el) => typesetMathInContainer(el),
     orLosers: (reports, questions) => computeOrLoserQNums(reports as any, questions as any),
-    backToClass: () => closeOsm(),
+    backToClass: () => { closeOsm(); if (currentClassForView) handleLoadIndividualClassPage(currentClassForView); },
 } as any);
 
 // Main execution starts here
