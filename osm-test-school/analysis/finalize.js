@@ -14,6 +14,7 @@ if(!dir){console.log('usage: node finalize.js <workdir> [--write] [--complete]')
 const man=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json'),'utf8')); const P=man.paper;
 const NEG=/\b(incorrect|wrong|not correct|did not|didn't|missing|incomplete|failed to|no marks|lost marks|error)\b/i;
 const POS=/\b(fully correct|perfect|excellent|completely correct|full marks|well done|correct answer)\b/i;
+const FM=['NEVER_KNEW','KNEW_BUT_FORGOT','KNEW_BUT_MISAPPLIED','KNEW_BUT_MISCALCULATED','KNEW_BUT_INCOMPLETE'];
 const TYPES=['RECALL','CONCEPTUAL','NUMERICAL','DERIVATION','DIAGRAM','APPLICATION','REASONING'];
 (async()=>{
  const problems=[]; const plan=[];
@@ -30,11 +31,12 @@ const TYPES=['RECALL','CONCEPTUAL','NUMERICAL','DERIVATION','DIAGRAM','APPLICATI
    if(full&&NEG.test(f.feedback)&&!POS.test(f.feedback)) problems.push(`${s.roll} Q${qn}: FULL marks (${got}/${max}) but feedback sounds negative → "${f.feedback.slice(0,80)}"`);
    if(zero&&max>0&&POS.test(f.feedback)&&!NEG.test(text)) problems.push(`${s.roll} Q${qn}: ZERO marks but feedback sounds fully positive → "${f.feedback.slice(0,80)}"`);
    if(got<max&&!f.howToImprove&&!s.losers.includes(qn)) problems.push(`${s.roll} Q${qn}: marks lost (${got}/${max}) but no howToImprove`);
+   if(got<max&&!s.losers.includes(qn)&&!FM.includes(f.failureMode||'')) problems.push(`${s.roll} Q${qn}: marks lost but failureMode is missing/invalid (use one of ${FM.join(', ')}) - the student app builds the study plan from it`);
    const parts=[f.feedback.trim()]; if(got<max&&f.whyWrong) parts.push(`Why marks were lost: ${f.whyWrong.trim()}`); if(got<max&&f.howToImprove) parts.push(`How to improve: ${f.howToImprove.trim()}`);
    reports.push({questionNumber:qn,text:q.text||'',answer:q.answer||'',type:q.type||'SA',marks:max,maxMarksForQuestion:max,marksAwarded:got,
      questionType:TYPES.includes(f.questionType)?f.questionType:'CONCEPTUAL',chapterTopic:f.topic||(q.topicAnchors&&q.topicAnchors[0])||P.title,topicAnchors:q.topicAnchors||[],
      checkingInstructions:q.checkingInstructions||'',rubric:q.rubric||{step_marking:'',keywords:[]},options:q.options||null,
-     finalFeedback:parts.join('\n\n'),studentOcrAnswer:'',answerPageIndices:[],requiresReview:false,stepWiseEvaluation:[],
+     finalFeedback:parts.join('\n\n'),failureMode:got<max?(f.failureMode||''):'',failurePoint:got<max?(f.failurePoint||''):'',prerequisiteConcept:got<max?(f.prerequisiteConcept||''):'',studentOcrAnswer:'',answerPageIndices:[],requiresReview:false,stepWiseEvaluation:[],
      _runtimeOrLoser:s.losers.includes(qn),_orPartnerQNum:null,markedBy:s.marks[qn].by,_source:'teacher_marking'});
   });
   if(reports.length!==man.questions.length) continue;

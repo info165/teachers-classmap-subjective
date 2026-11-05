@@ -15,3 +15,7 @@
 
 ## Teacher text notes
 Teachers can type notes on the page. `manifest.json` has `students[].notes` ([{page, teacher, text}]). Read them while writing feedback and treat them as the teacher's own comments; the existing grading viewer only shows pen strokes, so notes are NOT drawn there.
+
+
+## failureMode (required when marks are lost)
+Each lost-mark question needs `failureMode`: NEVER_KNEW (no idea / blank), KNEW_BUT_FORGOT, KNEW_BUT_MISAPPLIED (wrong law/term/concept), KNEW_BUT_MISCALCULATED (sign/arithmetic), KNEW_BUT_INCOMPLETE (right idea, parts or numbers missing). The student app uses it for the study plan; without it every gap reads 'zero foundation'. Optional: failurePoint, prerequisiteConcept.
