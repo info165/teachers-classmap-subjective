@@ -142,11 +142,15 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const marked=new Set(reports.map(r=>r.markedBy));
   const ver={}; expected.forEach(t=>{ver[t.uid]={verified:true,teacherName:t.name,auto:true,via:'teacher_marking',gaveMarks:marked.has(t.uid)};});
   const sub=owner.collection('submissions').doc(s.studentUid);
+  // never overwrite what a teacher has already edited in the feedback (use --force only when asked to)
+  { const ex=await sub.get(); if(ex.exists && ex.data().analysis && ex.data().analysis.edited && !process.argv.includes('--force')){ console.log('  SKIPPED',s.roll,s.name,'- a teacher has edited this feedback; not overwritten (use --force only if asked)'); continue; } }
   await sub.set({studentName:s.name,studentUid:s.studentUid,rollNumber:s.roll,maximumMarks:P.declaredTotal,overallScore:total,studentKeywords:[],studentIntelligence:intel,
     gradingTimestamp:new Date().toISOString(),assessmentId:P.id,subject:P.subject,className:P.className,section:P.section,requiresReview:false,
     answerSheetImageUrls:s.pages.map(p=>p.url),pencilAnnotations:pencil,overallFeedback:overall,analysis,
     teacherVerified:true,teacherVerifications:ver,published:false,source:'teacher_marking'});
   await sub.collection('detail').doc('report').set({questionWiseReport:reports,fullOcrText:''});
+  // history line: the AI wrote feedback/analysis only; marks are exactly what the teachers entered
+  await sub.collection('detail').doc('osmLog_AI').set({teacherUid:'AI',teacherName:'AI',updatedAt:Date.now(),events:admin.firestore.FieldValue.arrayUnion({id:'ai'+Date.now().toString(36),t:Date.now(),by:'AI',n:'AI',type:'ai',text:'AI wrote the feedback and the learning analysis. AI never changes marks: every mark is exactly what the teachers entered.'})},{merge:true});
   console.log('  wrote',s.roll,s.name,`${total}/${P.declaredTotal}`,`concepts:${analysis.conceptMastery.length} topics:${analysis.topicMastery.length} strong:${analysis.strengths.length} weak:${analysis.weaknesses.length}`);
  }
  if(COMPLETE) console.log('\nNote: --complete is no longer used. The paper stays inside Teacher Marking (status: Analysis done), and is published from there.');

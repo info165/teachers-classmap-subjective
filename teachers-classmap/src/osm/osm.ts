@@ -267,6 +267,7 @@ async function bakedSheetUrls(paper: Paper, uid: string, urls: string[]): Promis
     return out;
 }
 async function publishOne(paper: Paper, uid: string) {
+    await obFlush(); if (obPendingCount()) throw new Error('some of your recent changes are not saved to the cloud yet — wait for “All changes saved” at the top, then publish');
     const ref = subRef(paper, uid);
     const [s, r] = await Promise.all([ref.get(), ref.collection('detail').doc('report').get()]);
     if (!s.exists || !r.exists) throw new Error('This student has not been analysed yet.');
@@ -483,6 +484,108 @@ function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: n
     });
 }
 
+
+// ═════════════════ Durable outbox + change log ═════════════════
+// Every change a teacher makes (mark, reason note, feedback edit, pen/tick/cross) is first written to this device (localStorage),
+// then sent to the cloud. It is removed from the device ONLY after the cloud confirms it. If the connection drops or the page is
+// refreshed, the change is still here and is sent automatically when possible (also next time the teacher signs in).
+// Each confirmed change also appends a line to the history (who / what / which question / when).
+type ObOp = { key: string; kind: 'mark' | 'note' | 'ink' | 'fb' | 'fbov' | 'log'; by: string; owner: string; pid: string; suid: string; at: number; data: any };
+const OB_KEY = 'osm-outbox-v1';
+const ob = { ops: new Map<string, ObOp>(), loaded: false, running: false, timer: null as any, fails: 0, lastErr: '', memOnly: false, subs: new Set<() => void>(), poll: null as any };
+function obLoad() {
+    if (ob.loaded) return; ob.loaded = true;
+    try { (JSON.parse(localStorage.getItem(OB_KEY) || '[]') as ObOp[]).forEach(o => { if (o && o.key) ob.ops.set(o.key, o); }); } catch { /* */ }
+    window.addEventListener('online', () => { ob.fails = 0; obSchedule(300); });
+    ob.poll = setInterval(() => { if (ob.ops.size && !ob.running) obSchedule(0); }, 20000);
+}
+function obSave() { try { localStorage.setItem(OB_KEY, JSON.stringify([...ob.ops.values()])); ob.memOnly = false; } catch { ob.memOnly = true; } }
+const obNotify = () => ob.subs.forEach(f => { try { f(); } catch { /* */ } });
+const obPendingCount = () => [...ob.ops.values()].filter(o => o.kind !== 'log').length;
+function obSchedule(delay: number) { clearTimeout(ob.timer); ob.timer = setTimeout(() => { obDrain(); }, delay); }
+function obEnqueue(op: ObOp, delay = 600) {
+    obLoad(); const old = ob.ops.get(op.key);
+    if (old) {   // a newer edit of the same thing replaces the older one; keep what the history needs
+        if (op.kind === 'fb') op.data = { items: { ...old.data.items, ...op.data.items } };
+        if (op.kind === 'mark') { op.data.prev = old.data.prev; op.data.reopen = !!(op.data.reopen || old.data.reopen); }
+        if (op.kind === 'note') op.data.prev = old.data.prev;
+        if (op.kind === 'ink') { const acc: any = JSON.parse(JSON.stringify(old.data.acc || {})); Object.entries(op.data.acc || {}).forEach(([pg, c]: any) => { acc[pg] ||= {}; Object.entries(c).forEach(([k, n]: any) => { acc[pg][k] = (acc[pg][k] || 0) + n; }); }); op.data.acc = acc; }
+    }
+    ob.ops.set(op.key, op); obSave(); obNotify(); obSchedule(delay);
+}
+function obLog(o: { by: string; owner: string; pid: string; suid: string }, ev: { type: string; q?: string; page?: number; text: string }) {
+    const me = B.teacher(); const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    obEnqueue({ key: 'log:' + id, kind: 'log', by: o.by, owner: o.owner, pid: o.pid, suid: o.suid, at: Date.now(), data: { id, t: Date.now(), by: o.by, n: me?.name || '', ...ev } }, 800);
+}
+const obFmt = (v: any) => v === undefined || v === null ? 'not marked' : String(Math.round(Number(v) * 100) / 100);
+async function obExec(o: ObOp) {
+    const P = { owner: o.owner, id: o.pid } as any as Paper; const d = o.data; const who = { by: o.by, owner: o.owner, pid: o.pid, suid: o.suid };
+    if (o.kind === 'mark') {
+        const patch: any = { studentUid: o.suid, studentName: d.studentName || '', rollNumber: d.rollNumber || '', marks: { [d.qk]: d.entry }, updatedAt: Date.now() };
+        if (d.reopen) patch.done = { [o.by]: B.FieldValue.delete() };
+        await stuRef(P, o.suid).set(patch, { merge: true });
+        if (d.prev !== d.entry.v) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: marks ${obFmt(d.prev)} → ${obFmt(d.entry.v)}` });
+    } else if (o.kind === 'note') {
+        await stuRef(P, o.suid).set({ notes: { [d.qk]: d.entry ? d.entry : B.FieldValue.delete() }, updatedAt: Date.now() }, { merge: true });
+        obLog(who, { type: 'note', q: d.qLabel, text: `${d.qLabel}: ${d.entry ? (d.prev ? 'edited' : 'added') : 'removed'} the reason note` });
+    } else if (o.kind === 'ink') {
+        let pages = d.pages;
+        if (d.union) {   // the saved marks could not be read earlier: merge instead of replacing, so nothing is lost
+            const snap = await inkRef(P, o.suid, o.by).get(); const sp = snap.exists ? (snap.data().pages || {}) : {};
+            pages = { ...sp }; Object.entries(d.pages || {}).forEach(([pg, arr]: any) => { const have = (pages[pg] || []) as any[]; pages[pg] = [...have, ...arr.filter((c: any) => !have.some((a: any) => JSON.stringify(a) === JSON.stringify(c)))]; });
+        }
+        await inkRef(P, o.suid, o.by).set({ teacherUid: o.by, teacherName: d.teacherName, pages, pv: d.pv ?? null, updatedAt: Date.now() });
+        const names: Record<string, string> = { pen: 'pen mark', note: 'text note', tick: 'tick', cross: 'cross' };
+        Object.entries(d.acc || {}).forEach(([pg, c]: any) => {
+            const add: string[] = [], rem: string[] = [];
+            Object.entries(c).forEach(([k, n]: any) => { if (n > 0) add.push(`${n} ${names[k]}${n > 1 ? 's' : ''}`); else if (n < 0) rem.push(`${-n} ${names[k]}${n < -1 ? 's' : ''}`); });
+            if (add.length || rem.length) obLog(who, { type: 'ink', page: Number(pg) + 1, text: `Page ${Number(pg) + 1}: ${[add.length ? 'added ' + add.join(', ') : '', rem.length ? 'removed ' + rem.join(', ') : ''].filter(Boolean).join('; ')}` });
+        });
+    } else if (o.kind === 'fb') {
+        const rr = paperRef(o.owner, o.pid).collection('submissions').doc(o.suid).collection('detail').doc('report'); const pr = paperRef(o.owner, o.pid).collection('submissions').doc(o.suid);
+        const changed: string[] = [];
+        await B.db.runTransaction(async (tx: any) => {
+            changed.length = 0;
+            const snap = await tx.get(rr); const arr: any[] = snap.exists ? (snap.data().questionWiseReport || []) : [];
+            Object.entries(d.items).forEach(([qn, it]: any) => {
+                const idx = arr.findIndex(x => String(x.questionNumber) === qn); if (idx < 0) return;
+                const a = arr[idx], b = it.obj;
+                if ((a.whyLost || '') !== (b.whyLost || '') || (a.howToImprove || '') !== (b.howToImprove || '') || (a.teacherNote || '') !== (b.teacherNote || '')) changed.push(it.label);
+                arr[idx] = b;
+            });
+            tx.set(rr, { questionWiseReport: arr }, { merge: true });
+            tx.update(pr, { overallScore: arr.filter(x => !x._runtimeOrLoser).reduce((s2: number, x: any) => s2 + (Number(x.marksAwarded) || 0), 0) });
+        });
+        changed.forEach(q => obLog(who, { type: 'feedback', q, text: `${q}: edited the feedback shown to the student` }));
+    } else if (o.kind === 'fbov') {
+        await paperRef(o.owner, o.pid).collection('submissions').doc(o.suid).update(d.fields);
+        obLog(who, { type: 'feedback', text: 'Edited the overall summary / strengths / areas / next steps' });
+    } else if (o.kind === 'log') {
+        await paperRef(o.owner, o.pid).collection('submissions').doc(o.suid).collection('detail').doc('osmLog_' + o.by).set({ teacherUid: o.by, teacherName: d.n, events: B.FieldValue.arrayUnion(d), updatedAt: Date.now() }, { merge: true });
+    }
+}
+async function obDrain(): Promise<void> {
+    obLoad(); const me = B.teacher(); if (!me || ob.running) return;
+    ob.running = true;
+    try {
+        for (;;) {
+            const next = [...ob.ops.values()].find(o => o.by === me.uid); if (!next) break;
+            try {
+                await Promise.race([obExec(next), new Promise((_, rej) => setTimeout(() => rej(new Error('no reply from the server (offline?)')), 15000))]);
+                if (ob.ops.get(next.key) === next) ob.ops.delete(next.key);   // a newer edit of the same item stays queued and is sent next
+                ob.fails = 0; ob.lastErr = ''; obSave(); obNotify();
+            } catch (e: any) {
+                ob.fails++; ob.lastErr = e?.message || String(e); obNotify();
+                obSchedule(Math.min(30000, 2000 * 2 ** Math.min(ob.fails, 4))); break;
+            }
+        }
+    } finally { ob.running = false; obNotify(); }
+}
+async function obFlush() {
+    clearTimeout(ob.timer);
+    for (let k = 0; k < 3; k++) { while (ob.running) await new Promise(r => setTimeout(r, 80)); await obDrain(); if (![...ob.ops.values()].some(o => o.by === B.teacher()?.uid)) break; }
+}
+
 // ───────────────────────── SCREEN C: marking desk ─────────────────────────
 type InkStroke = { c: string; w: number; d?: string; t?: string; x?: number; y?: number; k?: 'tick' | 'cross' };   // a pen stroke (d) or a text note (t at x,y)
 async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; name: string }[], studentUid: string, order: string[], startView: 'mark' | 'fb' = 'mark') {
@@ -504,6 +607,14 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const [ps, rs] = await Promise.all([sref.get(), sref.collection('detail').doc('report').get()]);
         if (ps.exists && rs.exists) { fbParent = ps.data(); fbReport = rs.data().questionWiseReport || []; }
     } catch (e) { console.warn('[osm] analysis not loaded', e); }
+    // changes made on this device that the cloud has not confirmed yet are shown as they were left (never lost on refresh)
+    obLoad(); void obDrain();
+    const pendingInk: any = (() => { let r: any = null; ob.ops.forEach(o => { if (o.suid !== studentUid || o.pid !== paper.id || o.by !== me.uid) return;
+        if (o.kind === 'mark') (doc.marks ||= {})[o.data.qk] = o.data.entry;
+        else if (o.kind === 'note') { if (o.data.entry) (doc.notes ||= {})[o.data.qk] = o.data.entry; else if (doc.notes) delete doc.notes[o.data.qk]; }
+        else if (o.kind === 'fb' && fbReport) Object.entries(o.data.items).forEach(([qn, it]: any) => { const ix = fbReport!.findIndex(x => String(x.questionNumber) === qn); if (ix >= 0) fbReport![ix] = it.obj; });
+        else if (o.kind === 'fbov' && fbParent) Object.assign(fbParent, o.data.fields);
+        else if (o.kind === 'ink') r = o.data.pages; }); return r; })();
     let view: 'mark' | 'fb' = startView === 'fb' && fbReport ? 'fb' : 'mark';
 
     const myIdx = new Set<number>(meta.assign?.[me.uid] || []);
@@ -511,6 +622,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     let unlockAll = !hasAssign;
     const pos = order.indexOf(studentUid);
     const inks: Record<string, Record<string, InkStroke[]>> = {};   // teacherUid -> page -> strokes
+    if (pendingInk) inks[me.uid] = JSON.parse(JSON.stringify(pendingInk));
     const nameOf = (u: string) => teachers.find(t => t.uid === u)?.name || 'Teacher';
     let zoom = Number((() => { try { return localStorage.getItem('osm-zoom'); } catch { return null; } })()) || 100;
     let tool: 'none' | 'pen' | 'note' | 'tick' | 'cross' | 'erase' = ((): any => { try { const t = localStorage.getItem('osm-tool'); return t === 'pen' || t === 'note' || t === 'tick' || t === 'cross' || t === 'erase' ? t : 'pen'; } catch { return 'pen'; } })(); let penColor = '#d93025'; let penW = 3;
@@ -522,7 +634,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <button class="osm-btn ghost" id="osm-close">${ICON.back}<span>Papers</span></button>
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
-            <span class="osm-inkstat" id="osm-ink-status" title="Your pen marks and notes are saved to your own layer on this sheet. Co-teachers see them lighter; you can only erase your own."></span>
+            <span class="osm-inkstat" id="osm-ink-status" title="Every change is saved"></span>
+            <button class="osm-btn small" id="osm-hist" title="Everything changed on this sheet: who, what, which question, when">${ICON.msg}<span>History</span></button>
           </div>
         </div>
         <div class="osm-desk-main">
@@ -585,30 +698,27 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     let inkTimer: any = null; let lastInkPage = -1;
     let inkDirty = false; let inkSaving = 0; let alive = true; let inkLoaded = false; let inkFails = 0;
     const myStrokeCount = () => Object.values(inks[me.uid] || {}).reduce((a, arr: any) => a + arr.length, 0);
-    function setInkStatus(kind: 'idle' | 'dirty' | 'saving' | 'saved' | 'error') {
+    function renderSync() {
         if (!alive) return;
-        const e = desk.querySelector('#osm-ink-status') as HTMLElement | null; if (!e) return;
-        const n = myStrokeCount();
-        e.className = 'osm-inkstat ' + kind;
-        e.textContent = kind === 'saving' ? '⏳ Saving annotations…' : kind === 'dirty' ? '● Not saved yet' : kind === 'error' ? '⚠ Annotations NOT saved — retrying' : kind === 'saved' ? `✓ Annotations saved (${n})` : (n ? `✓ ${n} annotation${n > 1 ? 's' : ''} saved` : 'No annotations yet');
+        const e = desk.querySelector('#osm-ink-status') as HTMLElement | null; const n = obPendingCount(); const bad = n > 0 && ob.fails > 0;
+        const txt = bad ? `⚠ ${n} change${n > 1 ? 's' : ''} not saved yet — kept on this device, retrying` : (n || inkDirty) ? '⏳ Saving…' : `✓ All changes saved${myStrokeCount() ? ` · ${myStrokeCount()} annotation${myStrokeCount() > 1 ? 's' : ''}` : ''}`;
+        if (e) { e.className = 'osm-inkstat ' + (bad ? 'error' : (n || inkDirty) ? 'saving' : 'saved'); e.textContent = txt; e.title = bad ? ('Reason: ' + ob.lastErr + '. Nothing is lost — it is stored on this computer and is sent automatically when the connection returns.') : 'Every mark, note, feedback edit and annotation is saved to the cloud. See History for the full log.'; }
+        const t2 = bad ? 'Not saved yet — kept, retrying' : n ? 'Saving…' : 'Saved ✓'; const c2 = 'osm-save ' + (bad ? 'bad' : n ? '' : 'ok');
+        [statusEl, sideEl.querySelector('#osm-save') as HTMLElement | null].forEach(x => { if (x) { x.textContent = t2; x.className = c2; } });
     }
-    function flushInk() {
-        clearTimeout(inkTimer); if (!inkDirty) return;
-        // never write before your saved strokes have loaded (the write replaces your whole ink doc)
-        if (!inkLoaded) { inkTimer = setTimeout(flushInk, 500); return; }
-        inkDirty = false;
-        const mine = inks[me.uid] || {};
-        inkSaving++; setInkStatus('saving');
-        inkRef(paper, studentUid, me.uid).set({ teacherUid: me.uid, teacherName: me.name, pages: mine, pv: doc.pagesVersion ?? null, updatedAt: Date.now() })
-            .then(() => { inkSaving--; inkFails = 0; if (!inkSaving && !inkDirty) setInkStatus('saved'); })
-            .catch(e => {
-                inkSaving--; inkDirty = true; inkFails++; setInkStatus('error');
-                if (inkFails <= 5 && alive) { toast('Could not save pen marks: ' + e.message + ' — retrying', 'error'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 4000); }
-                else if (alive) toast('Pen marks still not saved. Please check your connection before leaving this sheet.', 'error');
-            });
+    function setInkStatus(_kind?: string) { renderSync(); }
+    const inkCounts = () => { const r: Record<string, Record<string, number>> = {}; Object.entries(inks[me.uid] || {}).forEach(([pg, arr]: any) => arr.forEach((st: any) => { const k = st.k || (st.t !== undefined ? 'note' : 'pen'); (r[pg] ||= {})[k] = (r[pg][k] || 0) + 1; })); return r; };
+    let inkBase: Record<string, Record<string, number>> = {}; let inkLoadFailed = false;
+    function flushInk() { if (inkDirty && inkLoaded) saveInk(); void obFlush(); }
+    function saveInk() {
+        inkDirty = true; renderSync();
+        if (!inkLoaded) return;   // wait until your saved strokes are read, so they are never overwritten
+        const cur = inkCounts(); const acc: any = {};
+        new Set([...Object.keys(cur), ...Object.keys(inkBase)]).forEach(pg => ['pen', 'note', 'tick', 'cross'].forEach(k => { const dlt = (cur[pg]?.[k] || 0) - (inkBase[pg]?.[k] || 0); if (dlt) (acc[pg] ||= {})[k] = dlt; }));
+        inkBase = cur; inkDirty = false;
+        obEnqueue({ key: `ink:${paper.id}:${studentUid}:${me.uid}`, kind: 'ink', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { pages: plain(inks[me.uid] || {}), pv: doc.pagesVersion ?? null, teacherName: me.name, acc, union: inkLoadFailed } }, 700);
     }
-    function saveInk() { inkDirty = true; setInkStatus('dirty'); clearTimeout(inkTimer); inkTimer = setTimeout(flushInk, 700); }
-    const warnUnload = (e: BeforeUnloadEvent) => { if (alive && (inkDirty || inkSaving)) { e.preventDefault(); e.returnValue = ''; } };
+    const warnUnload = (e: BeforeUnloadEvent) => { if (alive && (inkDirty || ob.memOnly && obPendingCount())) { e.preventDefault(); e.returnValue = ''; } };
     window.addEventListener('beforeunload', warnUnload);
     window.addEventListener('pagehide', flushInk);
     // drawing
@@ -675,8 +785,9 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         try {
             const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
             snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { if ((d.data().pv ?? null) !== (doc.pagesVersion ?? null)) return; const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => JSON.stringify(a) === JSON.stringify(c)))]; }); } else inks[tu] = d.data().pages || {}; } });
-            pageWrap.forEach((_, i) => renderInk(i)); inkLoaded = true; setInkStatus('idle');
-        } catch (e) { console.warn('[osm] ink load', e); inkLoaded = true; toast('Could not load existing pen marks — new marks will still be saved.', 'info'); }
+            pageWrap.forEach((_, i) => renderInk(i)); inkLoaded = true; inkBase = inkCounts(); renderSync();
+            if (inkDirty) saveInk();
+        } catch (e) { console.warn('[osm] ink load', e); inkLoaded = true; inkLoadFailed = true; inkBase = inkCounts(); toast('Could not load existing pen marks — new marks will still be saved safely.', 'info'); if (inkDirty) saveInk(); }
     })();
 
     // ---- tool buttons ------------------------------------------------------
@@ -706,7 +817,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
 
     // ---- marks panel -------------------------------------------------------
     const saveTimers: Record<number, any> = {}; const pendingRun: Record<number, () => void> = {};
-    function flushMarks() { return Promise.all(Object.keys(pendingRun).map(k => { const i = Number(k); clearTimeout(saveTimers[i]); const f = pendingRun[i]; delete pendingRun[i]; return f(); })); }
+    function flushMarks() { return obFlush(); }
     let savingCount = 0; let statusEl: HTMLElement | null = null;
     const setStatus = (t: string, cls = '') => { if (statusEl) { statusEl.textContent = t; statusEl.className = 'osm-save ' + cls; } };
     function chipValues(max: number): number[] {
@@ -718,21 +829,16 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     function editable(i: number) { return unlockAll || myIdx.has(i); }
     // ═════════ Feedback tab: exactly what the student will see; everything is editable and autosaved ═════════
     const linesOf = (a: any) => (Array.isArray(a) ? a : []).map((x: any) => typeof x === 'string' ? x : (x?.text || '')).join('\n');
-    let fbTimer: any = null, fbOvTimer: any = null, fbDirty = false, fbOvDirty = false;
-    const fbStatus = (t: string, cls = '') => { const e = sideEl.querySelector('#osm-save'); if (e) { e.textContent = t; e.className = 'osm-save ' + cls; } };
-    async function writeReport() {
-        fbDirty = false; fbStatus('Saving…');
-        try { await subRef(paper, studentUid).collection('detail').doc('report').set({ questionWiseReport: plain(fbReport) }, { merge: true }); fbStatus('Saved ✓', 'ok'); }
-        catch (e: any) { fbDirty = true; fbStatus('Not saved — check connection', 'bad'); toast('Could not save: ' + e.message, 'error'); }
+    const fbStatus = (_t?: string, _c?: string) => { renderSync(); };
+    function queueReportSave(i: number) {
+        const qr = fbReport?.[i]; if (!qr) return;
+        obEnqueue({ key: `fb:${paper.id}:${studentUid}`, kind: 'fb', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { items: { [String(qr.questionNumber)]: { obj: plain(qr), label: 'Q' + qr.questionNumber } } } }, 800);
     }
-    async function writeParent() {
-        fbOvDirty = false; fbStatus('Saving…');
-        try { await subRef(paper, studentUid).update(plain({ overallFeedback: fbParent.overallFeedback, analysis: fbParent.analysis, overallScore: fbParent.overallScore })); fbStatus('Saved ✓', 'ok'); }
-        catch (e: any) { fbOvDirty = true; fbStatus('Not saved — check connection', 'bad'); toast('Could not save: ' + e.message, 'error'); }
+    function queueOverallSave() {
+        if (!fbParent) return;
+        obEnqueue({ key: `fbov:${paper.id}:${studentUid}`, kind: 'fbov', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { fields: plain({ overallFeedback: fbParent.overallFeedback || {}, analysis: fbParent.analysis || {} }) } }, 800);
     }
-    function queueReportSave() { fbDirty = true; fbStatus('Saving…'); clearTimeout(fbTimer); fbTimer = setTimeout(writeReport, 800); }
-    function queueOverallSave() { fbOvDirty = true; fbStatus('Saving…'); clearTimeout(fbOvTimer); fbOvTimer = setTimeout(writeParent, 800); }
-    async function flushFb() { clearTimeout(fbTimer); clearTimeout(fbOvTimer); if (fbDirty) await writeReport(); if (fbOvDirty) await writeParent(); }
+    async function flushFb() { await obFlush(); }
     // a mark changed (here or in the Marking tab): update the report; declared total + OR rule decide the score
     function applyMarkToReport(i: number, v: number) {
         if (!fbReport || !fbReport[i] || !fbParent) return;
@@ -741,7 +847,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         let losers: Set<string>; try { losers = B.orLosers(items, paper.questions); } catch { losers = new Set(); }
         fbReport.forEach(r => { r._runtimeOrLoser = losers.has(r.questionNumber) || !!r._unattemptedAlt; });   // an alternative the student did not choose stays uncounted
         fbParent.overallScore = fbReport.filter(r => !r._runtimeOrLoser).reduce((a, r) => a + (r.marksAwarded || 0), 0);
-        queueReportSave(); queueOverallSave();
+        queueReportSave(i);
     }
     function tabsHtml() {
         if (!fbReport) return '';
@@ -855,16 +961,14 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-fbta').forEach(ta => ta.addEventListener('input', () => {
             const i = Number(ta.dataset.i); const ed = sideEl.querySelector(`.osm-rq-edit[data-i="${i}"]`)!; const g = (f: string) => (ed.querySelector(`textarea[data-f="${f}"]`) as HTMLTextAreaElement).value.trim();
-            composeFb(fbReport![i], g('why'), g('how'), g('note')); queueReportSave();
+            composeFb(fbReport![i], g('why'), g('how'), g('note')); queueReportSave(i);
         }));
         sideEl.querySelectorAll<HTMLInputElement>('.osm-fbmark').forEach(inp => {
             inp.addEventListener('focus', () => inp.select());
             inp.addEventListener('change', async () => {
                 const i = Number(inp.dataset.i); const max = qMax(paper.questions[i]);
                 let v = Math.round(parseFloat(inp.value.replace(',', '.')) * 2) / 2; if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; toast(`Out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
-                const entry = { v, by: me.uid, n: me.name, t: Date.now() }; (doc.marks ||= {})[qk(i)] = entry;
-                try { await stuRef(paper, studentUid).set({ marks: { [qk(i)]: entry }, updatedAt: Date.now() }, { merge: true }); } catch (e: any) { toast('Could not save mark: ' + e.message, 'error'); return; }
-                applyMarkToReport(i, v); renderFb();
+                queueSave(i, String(v), inp, true); renderFb();
             });
         });
         // overall analysis blocks
@@ -986,45 +1090,28 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     // Optional teacher reason for cut marks: autosaved per question; merge-write of ONE field, so co-teachers never overwrite each other.
     function queueNote(i: number, text: string) {
-        const key = 1000 + i; clearTimeout(saveTimers[key]);
         const btn = sideEl.querySelector(`.osm-rbtn[data-i="${i}"]`); btn?.classList.toggle('has', !!text.trim());
-        const run = async () => {
-            const t = text.trim(); const entry: any = t ? { t: text, by: me.uid, n: me.name, at: Date.now() } : B.FieldValue.delete();
-            if (t) (doc.notes ||= {})[qk(i)] = entry; else if (doc.notes) delete doc.notes[qk(i)];
-            savingCount++; setStatus('Saving…');
-            try { await stuRef(paper, studentUid).set({ notes: { [qk(i)]: entry }, updatedAt: Date.now() }, { merge: true }); savingCount--; if (!savingCount) setStatus('Saved ✓', 'ok'); }
-            catch (e: any) { savingCount--; setStatus('Not saved — check connection', 'bad'); toast('Could not save your note: ' + e.message, 'error'); }
-        };
-        pendingRun[key] = run; saveTimers[key] = setTimeout(() => { delete pendingRun[key]; run(); }, 700);
+        const t = text.trim(); const hadNote = !!doc.notes?.[qk(i)]; const entry: any = t ? { t: text, by: me.uid, n: me.name, at: Date.now() } : null;
+        if (t) (doc.notes ||= {})[qk(i)] = entry; else if (doc.notes) delete doc.notes[qk(i)];
+        obEnqueue({ key: `note:${paper.id}:${studentUid}:${qk(i)}`, kind: 'note', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: hadNote } }, 800);
     }
     function queueSave(i: number, raw: string, inp: HTMLInputElement, immediate = false) {
-        clearTimeout(saveTimers[i]);
-        const run = async () => {
-            const max = qMax(paper.questions[i]);
-            if (raw.trim() === '') return;   // clearing a box does not delete a saved mark by accident
-            if (/[.,]$/.test(raw.trim())) return;   // still typing "1." — wait for the next digit
-            let v = Math.round(parseFloat(raw.replace(',', '.')) * 2) / 2;   // marks are in half-mark steps
-            if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
-            if (document.activeElement !== inp) inp.value = String(v);
-            const entry = { v, by: me.uid, n: me.name, t: Date.now() };
-            (doc.marks ||= {})[qk(i)] = entry;
-            // a changed mark reopens the teacher's own "Marks Given" so it is never stale
-            savingCount++; setStatus('Saving…');
-            try {
-                const patch: any = { studentUid, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '', marks: { [qk(i)]: entry }, updatedAt: Date.now() };
-                // Editing a mark after "Marks Given" reopens this teacher's own done flag, so it can never be stale.
-                const reopened = !!doc.done?.[me.uid];
-                if (reopened) patch.done = { [me.uid]: B.FieldValue.delete() };
-                await stuRef(paper, studentUid).set(patch, { merge: true });
-                if (fbReport) applyMarkToReport(i, v);   // already analysed: keep the report in step
-                if (reopened) { delete doc.done![me.uid]; renderSideKeepFocus(); }
-                savingCount--; if (!savingCount) setStatus('Saved ✓', 'ok');
-                refreshScoreOnly();
-            } catch (e: any) { savingCount--; setStatus('Not saved — check connection', 'bad'); toast('Could not save mark: ' + e.message, 'error'); }
-        };
-        pendingRun[i] = run;
-        const go = () => { delete pendingRun[i]; run(); };
-        if (immediate) { clearTimeout(saveTimers[i]); go(); } else saveTimers[i] = setTimeout(go, 600);
+        const max = qMax(paper.questions[i]);
+        if (raw.trim() === '') return;   // clearing a box does not delete a saved mark by accident
+        if (/[.,]$/.test(raw.trim())) return;   // still typing "1." — wait for the next digit
+        let v = Math.round(parseFloat(raw.replace(',', '.')) * 2) / 2;   // marks are in half-mark steps
+        if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
+        if (document.activeElement !== inp) inp.value = String(v);
+        const prevV = doc.marks?.[qk(i)]?.v;
+        const entry = { v, by: me.uid, n: me.name, t: Date.now() };
+        (doc.marks ||= {})[qk(i)] = entry;
+        // Editing a mark after "Marks Given" reopens this teacher's own done flag, so it can never be stale.
+        const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
+        // saved on this device at once; sent to the cloud right after (and re-sent automatically if it cannot be)
+        obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevV, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, immediate ? 0 : 600);
+        if (fbReport) applyMarkToReport(i, v);   // already analysed: keep the report in step
+        if (reopened) renderSideKeepFocus();
+        refreshScoreOnly();
     }
     function renderSideKeepFocus() {
         const a = document.activeElement as HTMLInputElement | null; const i = a?.classList.contains('osm-in') ? a.dataset.i : null; const v = a?.value;
@@ -1047,8 +1134,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             // An unattempted alternative (OR) question needs no mark when its partner has one: it is saved as 0 for you.
             const partnerOf = (i: number) => { const ci = String(paper.questions[i].checkingInstructions || ''); if (!/alternative question \(or\)/i.test(ci)) return -1; const m = ci.match(/with\s+question\s+([\w.\-\s()]+?)(?:\.\s|\.$|,|;|$)/i); if (!m) return -1; const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, ''); return paper.questions.findIndex(q => n(q.questionNumber || '') === n(m[1])); };
             const autoZero = mine.filter(i => doc.marks?.[qk(i)] === undefined && partnerOf(i) >= 0 && doc.marks?.[qk(partnerOf(i))] !== undefined);
-            try { for (const i of autoZero) { const e = { v: 0, by: me.uid, n: me.name, t: Date.now() }; (doc.marks ||= {})[qk(i)] = e; await stuRef(paper, studentUid).set({ marks: { [qk(i)]: e }, updatedAt: Date.now() }, { merge: true }); } }
-            catch (e: any) { toast('Could not save: ' + e.message, 'error'); return; }
+            for (const i of autoZero) queueSave(i, '0', document.createElement('input'), true);   // unattempted OR alternative: saved as 0 (logged like any mark)
             if (autoZero.length) renderSide();
             const missing = mine.filter(i => doc.marks?.[qk(i)] === undefined);
             if (missing.length) {
@@ -1062,11 +1148,36 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             const ref = stuRef(paper, studentUid);
             if (iAmDone) { await ref.update({ ['done.' + me.uid]: B.FieldValue.delete() }); delete doc.done![me.uid]; }
             else { await ref.set({ done: { [me.uid]: { n: me.name, t: Date.now() } } }, { merge: true }); (doc.done ||= {})[me.uid] = { n: me.name, t: Date.now() }; }
+            obLog({ by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid }, { type: 'done', text: iAmDone ? 'Reopened the marking for editing' : 'Clicked “Marks Given” (verified the marks)' });
             renderSide();
             toast(iAmDone ? 'Reopened for editing.' : 'Marks given ✓', 'success');
         } catch (e: any) { toast('Could not update: ' + e.message, 'error'); }
     }
     renderSide();
+    const onSync = () => renderSync(); ob.subs.add(onSync); stopListeners.push(() => ob.subs.delete(onSync)); renderSync();
+    desk.querySelector('#osm-hist')!.addEventListener('click', () => openHistory());
+    // History: every confirmed change on this sheet (marks, reason notes, feedback edits, annotations), by every teacher; AI feedback is listed too.
+    async function openHistory() {
+        document.querySelectorAll('.osm-hist-back').forEach(n => n.remove());
+        const back = document.createElement('div'); back.className = 'osm-hist-back';
+        back.innerHTML = `<div class="osm-hist"><div class="osm-hist-h"><b>Change history</b><span class="osm-sub">${esc(doc.studentName || stu?.name || '')} · Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span><button class="osm-btn small" id="hist-x">Close</button></div>
+          <div class="osm-hist-note">Marks are only ever entered or changed by teachers. The AI writes feedback and the learning analysis only, and never changes a mark.</div>
+          <div class="osm-hist-f"><select id="hist-q"><option value="">All questions</option></select><select id="hist-p"><option value="">Everyone</option></select></div>
+          <div class="osm-hist-l" id="hist-l"><div class="osm-sub" style="padding:14px">Loading…</div></div></div>`;
+        document.body.appendChild(back); back.addEventListener('click', e => { if (e.target === back) back.remove(); }); back.querySelector('#hist-x')!.addEventListener('click', () => back.remove());
+        let evs: any[] = [];
+        try { const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get(); snap.docs.forEach((d: any) => { if (d.id.startsWith('osmLog_')) evs.push(...(d.data().events || [])); }); } catch (e: any) { (back.querySelector('#hist-l') as HTMLElement).innerHTML = `<div class="osm-sub" style="padding:14px">Could not load the history: ${esc(e.message)}</div>`; return; }
+        const seen = new Set(evs.map(e => e.id)); ob.ops.forEach(o => { if (o.kind === 'log' && o.suid === studentUid && o.pid === paper.id && !seen.has(o.data.id)) evs.push({ ...o.data, pendingSave: true }); });
+        evs.sort((a, b) => b.t - a.t);
+        const qSel = back.querySelector('#hist-q') as HTMLSelectElement, pSel = back.querySelector('#hist-p') as HTMLSelectElement;
+        [...new Set(evs.map(e => e.q).filter(Boolean))].sort((a: any, b: any) => a.localeCompare(b, undefined, { numeric: true })).forEach((q: any) => qSel.insertAdjacentHTML('beforeend', `<option>${esc(q)}</option>`));
+        [...new Set(evs.map(e => e.n || 'Teacher'))].forEach((n: any) => pSel.insertAdjacentHTML('beforeend', `<option>${esc(n)}</option>`));
+        const draw = () => {
+            const list = evs.filter(e => (!qSel.value || e.q === qSel.value) && (!pSel.value || (e.n || 'Teacher') === pSel.value));
+            (back.querySelector('#hist-l') as HTMLElement).innerHTML = list.length ? list.map(e => `<div class="osm-hist-r ${e.type === 'ai' ? 'ai' : ''}"><div class="osm-hist-t">${esc(new Date(e.t).toLocaleString())}</div><div><b>${e.type === 'ai' ? 'AI (feedback only)' : esc(e.n || 'Teacher')}</b> — ${esc(e.text)}${e.pendingSave ? ' <i>(saving…)</i>' : ''}</div></div>`).join('') : '<div class="osm-sub" style="padding:14px">Nothing recorded yet for this selection. Changes from now on are logged automatically.</div>';
+        };
+        qSel.onchange = draw; pSel.onchange = draw; draw();
+    }
 
     // live updates from co-teachers (does not disturb a box you are typing in)
     const unsub = stuRef(paper, studentUid).onSnapshot((snap: any) => {
@@ -1134,6 +1245,12 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-hist-back{position:fixed;inset:0;z-index:100001;background:rgba(15,20,40,.55);display:flex;align-items:center;justify-content:center;padding:18px}
+.osm-hist{background:#fff;color:#1b1f3b;border-radius:16px;width:min(720px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);font-family:Inter,Poppins,system-ui,sans-serif}
+.osm-hist-h{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #e6e9f4}.osm-hist-h b{font-size:16px}.osm-hist-h .osm-sub{flex:1;color:#6b7280}
+.osm-hist-note{margin:10px 18px 0;padding:8px 12px;background:#eef2ff;border-radius:10px;font-size:12.5px;color:#34408a}
+.osm-hist-f{display:flex;gap:8px;padding:10px 18px}.osm-hist-f select{padding:6px 10px;border:1px solid #d7dcec;border-radius:9px;font-family:inherit}
+.osm-hist-l{overflow:auto;padding:0 18px 16px;flex:1}.osm-hist-r{display:flex;gap:14px;padding:8px 0;border-bottom:1px solid #eef0f7;font-size:13px;line-height:1.45}.osm-hist-r.ai{background:#f6f0ff;margin:0 -8px;padding:8px}.osm-hist-t{flex:none;width:150px;color:#6b7280;font-size:12px}
 .osm-vtools{width:68px;flex:none;display:flex;flex-direction:column;align-items:stretch;gap:4px;padding:10px 6px;background:#242938;overflow-y:auto;border-right:1px solid rgba(255,255,255,.08)}
 .osm-vtools .vt{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;border-radius:11px;background:transparent;color:#dfe4f2;padding:7px 2px;cursor:pointer;font-family:inherit;transition:background .12s,transform .08s}
 .osm-vtools .vt span{font-size:10px;font-weight:500;letter-spacing:.2px}.osm-vtools .vt:hover{background:rgba(255,255,255,.1)}.osm-vtools .vt:active{transform:scale(.94)}
