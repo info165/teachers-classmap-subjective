@@ -63,6 +63,9 @@ const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const qMax = (q: any) => Number(q?.marks) || 0;
 const shortName = (name: string, all: { name: string }[]) => { const w = name.split(' '); for (let k = 1; k <= w.length; k++) { const c = w.slice(0, k).join(' '); if (all.filter(a => a.name.startsWith(c + ' ') || a.name === c).length === 1) return c; } return name; };
 const fmt1 = (n: number) => (Math.round(n * 100) / 100).toString();
+// one distinct colour per mark value (0, 0.5, 1 … ) so a glance at the panel shows what was given
+const PALETTE = ['#e53935', '#fb8c00', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#d81b60', '#6d4c41', '#00897b', '#7cb342', '#3949ab', '#f4511e', '#039be5', '#5e35b1', '#afb42b', '#546e7a', '#ec407a', '#26a69a', '#ffa000', '#5c6bc0', '#8d6e63'];
+const markColor = (v: number) => PALETTE[Math.round(v * 2) % PALETTE.length];
 
 // ───────────────────────── firestore paths ─────────────────────────
 const paperRef = (owner: string, id: string) => B.db.collection('teachers').doc(owner).collection('assessmentHistory').doc(id);
@@ -388,7 +391,7 @@ function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: n
 }
 
 // ───────────────────────── SCREEN C: marking desk ─────────────────────────
-type InkStroke = { c: string; w: number; d: string };
+type InkStroke = { c: string; w: number; d?: string; t?: string; x?: number; y?: number };   // a pen stroke (d) or a text note (t at x,y)
 async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; name: string }[], studentUid: string, order: string[]) {
     clearListeners();
     const el = ensureRoot();
@@ -408,7 +411,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     const inks: Record<string, Record<string, InkStroke[]>> = {};   // teacherUid -> page -> strokes
     const nameOf = (u: string) => teachers.find(t => t.uid === u)?.name || 'Teacher';
     let zoom = Number((() => { try { return localStorage.getItem('osm-zoom'); } catch { return null; } })()) || 100;
-    let tool: 'none' | 'pen' | 'erase' = 'none'; let penColor = '#d93025'; let penW = 3;
+    let tool: 'none' | 'pen' | 'note' | 'erase' = ((): any => { try { const t = localStorage.getItem('osm-tool'); return t === 'pen' || t === 'note' || t === 'erase' ? t : 'none'; } catch { return 'none'; } })(); let penColor = '#d93025'; let penW = 3;
     const theme = (() => { try { return localStorage.getItem('osm-theme') || 'light'; } catch { return 'light'; } })();
 
     el.innerHTML = `
@@ -417,10 +420,10 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <button class="osm-btn ghost" id="osm-close">← Papers</button>
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
-            <div class="osm-seg"><button id="t-view" class="on" title="Scroll / look">☝ View</button><button id="t-pen" title="Pen">✏ Pen</button><button id="t-erase" title="Erase your strokes">⌫ Erase</button></div>
+            <div class="osm-seg"><button id="t-view" class="on" title="Scroll / look">☝ View</button><button id="t-pen" title="Pen">✏ Pen</button><button id="t-note" title="Type a text note on the page (click where it should go)">Aa Note</button><button id="t-erase" title="Erase your own pen marks or notes">⌫ Erase</button></div>
             <input type="color" id="t-color" value="${penColor}" title="Pen colour"><select id="t-w" title="Pen width"><option value="2">Thin</option><option value="3" selected>Medium</option><option value="6">Thick</option></select>
             <button class="osm-btn small" id="t-undo" title="Undo last stroke on the page you drew on">↶ Undo</button>
-            <span class="osm-inkstat" id="osm-ink-status" title="Your pen marks are saved to your own layer on this sheet. Co-teachers see them in lighter ink; you can only erase your own."></span>
+            <span class="osm-inkstat" id="osm-ink-status" title="Your pen marks and notes are saved to your own layer on this sheet. Co-teachers see them lighter; you can only erase your own."></span>
             <button class="osm-btn small" id="t-theme" title="Dark / light panel">${theme === 'dark' ? '☀' : '☾'}</button>
           </div>
         </div>
@@ -454,12 +457,13 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     function renderInk(i: number) {
         const svg = pageWrap[i].querySelector('svg') as SVGSVGElement; if (!svg) return;
-        svg.innerHTML = Object.entries(inks).map(([tu, pg]) => (pg[String(i)] || []).map((s, si) =>
-             `<path d="${esc(s.d)}" stroke="${esc(s.c)}" stroke-width="${Number(s.w) || 3}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${tu === me.uid ? 1 : 0.55}" data-t="${esc(tu)}" data-s="${si}"/>`).join('')).join('');
+        svg.innerHTML = Object.entries(inks).map(([tu, pg]) => (pg[String(i)] || []).map((s, si) => s.t !== undefined
+             ? `<text x="${Number(s.x) || 0}" y="${Number(s.y) || 0}" fill="${esc(s.c)}" font-size="${Number(s.w) || 24}" font-weight="600" style="font-family:Poppins,system-ui,sans-serif;paint-order:stroke;stroke:#fff;stroke-width:${Math.max(3, (Number(s.w) || 24) / 6)}px;stroke-linejoin:round;white-space:pre" opacity="${tu === me.uid ? 1 : 0.6}" data-t="${esc(tu)}" data-s="${si}">${String(s.t).split('\n').map((ln, k) => `<tspan x="${Number(s.x) || 0}" dy="${k ? '1.2em' : '0'}">${esc(ln)}</tspan>`).join('')}</text>`
+             : `<path d="${esc(s.d || '')}" stroke="${esc(s.c)}" stroke-width="${Number(s.w) || 3}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${tu === me.uid ? 1 : 0.55}" data-t="${esc(tu)}" data-s="${si}"/>`).join('')).join('');
         const mineN = (inks[me.uid]?.[String(i)] || []).length; const theirN = Object.entries(inks).reduce((a, [tu, pg]) => a + (tu === me.uid ? 0 : (pg[String(i)] || []).length), 0);
-        const lab = pageWrap[i].querySelector('.osm-pg-n') as HTMLElement | null; if (lab) lab.textContent = (mineN || theirN) ? `· ${mineN} pen mark${mineN === 1 ? '' : 's'} by you${theirN ? `, ${theirN} by co-teachers` : ''}` : '';
+        const lab = pageWrap[i].querySelector('.osm-pg-n') as HTMLElement | null; if (lab) lab.textContent = (mineN || theirN) ? `· ${mineN} annotation${mineN === 1 ? '' : 's'} by you${theirN ? `, ${theirN} by co-teachers` : ''}` : '';
         svg.style.pointerEvents = tool === 'none' ? 'none' : 'auto';
-        svg.style.cursor = tool === 'pen' ? 'crosshair' : tool === 'erase' ? 'cell' : 'default';
+        svg.style.cursor = tool === 'pen' ? 'crosshair' : tool === 'note' ? 'text' : tool === 'erase' ? 'cell' : 'default';
     }
     let inkTimer: any = null; let lastInkPage = -1;
     let inkDirty = false; let inkSaving = 0; let alive = true; let inkLoaded = false; let inkFails = 0;
@@ -469,7 +473,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const e = desk.querySelector('#osm-ink-status') as HTMLElement | null; if (!e) return;
         const n = myStrokeCount();
         e.className = 'osm-inkstat ' + kind;
-        e.textContent = kind === 'saving' ? '⏳ Saving pen marks…' : kind === 'dirty' ? '● Pen marks not saved yet' : kind === 'error' ? '⚠ Pen marks NOT saved — retrying' : kind === 'saved' ? `✓ Pen marks saved (${n})` : (n ? `✓ ${n} pen mark${n > 1 ? 's' : ''} saved` : 'Pen: nothing drawn yet');
+        e.textContent = kind === 'saving' ? '⏳ Saving annotations…' : kind === 'dirty' ? '● Not saved yet' : kind === 'error' ? '⚠ Annotations NOT saved — retrying' : kind === 'saved' ? `✓ Annotations saved (${n})` : (n ? `✓ ${n} annotation${n > 1 ? 's' : ''} saved` : 'No annotations yet');
     }
     function flushInk() {
         clearTimeout(inkTimer); if (!inkDirty) return;
@@ -498,8 +502,15 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const vb = svg.viewBox.baseVal; const rect = svg.getBoundingClientRect();
         const pt = (e: PointerEvent) => ({ x: ((e.clientX - rect.left) / rect.width) * vb.width, y: ((e.clientY - rect.top) / rect.height) * vb.height });
         if (tool === 'erase') {
-            const hit = (ev.target as Element).closest('path[data-t]') as SVGPathElement | null;
-            if (hit && hit.dataset.t === me.uid) { const arr = inks[me.uid]?.[String(i)]; if (arr) { arr.splice(Number(hit.dataset.s), 1); renderInk(i); saveInk(); } }
+            const hit = (ev.target as Element).closest('path[data-t],text[data-t]') as SVGElement | null;
+            if (hit && (hit as any).dataset.t === me.uid) { const arr = inks[me.uid]?.[String(i)]; if (arr) { arr.splice(Number((hit as any).dataset.s), 1); renderInk(i); saveInk(); } }
+            return;
+        }
+        if (tool === 'note') {
+            ev.preventDefault();
+            const own = (ev.target as Element).closest('text[data-t]') as SVGElement | null;
+            const idx = own && (own as any).dataset.t === me.uid ? Number((own as any).dataset.s) : -1;
+            openNoteEditor(i, svg, idx >= 0 ? inks[me.uid]?.[String(i)]?.[idx] : null, idx, pt(ev));
             return;
         }
         ev.preventDefault(); svg.setPointerCapture(ev.pointerId);
@@ -515,22 +526,47 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         };
         svg.addEventListener('pointermove', mv); svg.addEventListener('pointerup', up); svg.addEventListener('pointercancel', up);
     });
+    // text notes: click on the page, type, Enter to place (Shift+Enter = new line, Esc = cancel). Click one of your notes to edit it.
+    function openNoteEditor(i: number, svg: SVGSVGElement, existing: InkStroke | null, idx: number, at: { x: number; y: number }) {
+        pagesEl.querySelectorAll('.osm-note-edit').forEach(n => n.remove());
+        const inner = svg.parentElement as HTMLElement; const vb = svg.viewBox.baseVal;
+        const x = existing ? Number(existing.x) : at.x, y = existing ? Number(existing.y) : at.y;
+        const fs = existing ? Number(existing.w) || 24 : (penW === 2 ? 18 : penW === 3 ? 24 : 34);
+        const ta = document.createElement('textarea'); ta.className = 'osm-note-edit'; ta.rows = 1; ta.placeholder = 'Type a note…'; ta.value = existing?.t || '';
+        ta.style.cssText = `left:${(x / vb.width * 100).toFixed(2)}%;top:${((y - fs) / vb.height * 100).toFixed(2)}%;color:${existing?.c || penColor};font-size:${(fs / vb.width * inner.clientWidth).toFixed(1)}px`;
+        inner.appendChild(ta); ta.focus(); ta.select();
+        let done = false;
+        const commit = (save: boolean) => {
+            if (done) return; done = true; const txt = ta.value.replace(/\s+$/, ''); ta.remove();
+            if (!save) return;
+            const arr = ((inks[me.uid] ||= {})[String(i)] ||= []);
+            if (!txt) { if (idx >= 0) arr.splice(idx, 1); }
+            else if (idx >= 0) arr[idx] = { ...arr[idx], t: txt }; else arr.push({ c: penColor, w: fs, t: txt, x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) });
+            lastInkPage = i; renderInk(i); saveInk();
+        };
+        ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(true); } else if (e.key === 'Escape') { e.preventDefault(); commit(false); } });
+        ta.addEventListener('input', () => { ta.rows = Math.min(8, ta.value.split('\n').length); });
+        ta.addEventListener('blur', () => commit(true));
+    }
     // load existing ink (all teachers); live-updates
     (async () => {
         try {
             const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
-            snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { if ((d.data().pv ?? null) !== (doc.pagesVersion ?? null)) return; const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => a.d === c.d))]; }); } else inks[tu] = d.data().pages || {}; } });
+            snap.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_')) { if ((d.data().pv ?? null) !== (doc.pagesVersion ?? null)) return; const tu = d.id.slice(7); if (tu === me.uid && inks[me.uid]) { Object.entries(d.data().pages || {}).forEach(([pg, arr]: any) => { const cur = (inks[me.uid][pg] ||= []); if (!cur.length) inks[me.uid][pg] = arr; else inks[me.uid][pg] = [...arr, ...cur.filter((c: any) => !arr.some((a: any) => JSON.stringify(a) === JSON.stringify(c)))]; }); } else inks[tu] = d.data().pages || {}; } });
             pageWrap.forEach((_, i) => renderInk(i)); inkLoaded = true; setInkStatus('idle');
         } catch (e) { console.warn('[osm] ink load', e); inkLoaded = true; toast('Could not load existing pen marks — new marks will still be saved.', 'info'); }
     })();
 
     // ---- tool buttons ------------------------------------------------------
     const setTool = (t: typeof tool) => {
-        tool = t; (['view', 'pen', 'erase'] as const).forEach(k => el.querySelector('#t-' + k)!.classList.toggle('on', (k === 'view' ? 'none' : k) === t));
+        tool = t; try { localStorage.setItem('osm-tool', t); } catch { /* */ }
+        (['view', 'pen', 'note', 'erase'] as const).forEach(k => el.querySelector('#t-' + k)!.classList.toggle('on', (k === 'view' ? 'none' : k) === t));
         pageWrap.forEach((_, i) => renderInk(i));
     };
+    setTool(tool);
     el.querySelector('#t-view')!.addEventListener('click', () => setTool('none'));
     el.querySelector('#t-pen')!.addEventListener('click', () => setTool('pen'));
+    el.querySelector('#t-note')!.addEventListener('click', () => setTool('note'));
     el.querySelector('#t-erase')!.addEventListener('click', () => setTool('erase'));
     (el.querySelector('#t-color') as HTMLInputElement).addEventListener('input', e => { penColor = (e.target as HTMLInputElement).value; });
     (el.querySelector('#t-w') as HTMLSelectElement).addEventListener('change', e => { penW = Number((e.target as HTMLSelectElement).value); });
@@ -560,10 +596,10 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     function editable(i: number) { return unlockAll || myIdx.has(i); }
     function renderSide() {
-        const prevScroll = (sideEl.querySelector('#osm-qs') as HTMLElement | null)?.scrollTop ?? 0;
+        const prevScroll = (sideEl.querySelector('#osm-qs') as HTMLElement | null)?.scrollTop ?? 0; const prevRail = (sideEl.querySelector('#osm-rail') as HTMLElement | null)?.scrollTop ?? 0;
         const openDet = new Set(Array.from(sideEl.querySelectorAll<HTMLDetailsElement>('.osm-q')).filter(r => (r.querySelector('details') as HTMLDetailsElement | null)?.open).map(r => r.dataset.i));
         renderSideInner();
-        const qs = sideEl.querySelector('#osm-qs') as HTMLElement | null; if (qs) qs.scrollTop = prevScroll;
+        const qs = sideEl.querySelector('#osm-qs') as HTMLElement | null; if (qs) qs.scrollTop = prevScroll; const rl = sideEl.querySelector('#osm-rail') as HTMLElement | null; if (rl) rl.scrollTop = prevRail;
         openDet.forEach(i => { const d = sideEl.querySelector(`.osm-q[data-i="${i}"] details`) as HTMLDetailsElement | null; if (d) d.open = true; });
     }
     function renderSideInner() {
@@ -572,30 +608,31 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const iAmDone = !!doc.done?.[me.uid];
         const dt = declaredTotal(paper);
         sideEl.innerHTML = `
-          <div class="osm-score"><div class="osm-score-num">${fmt1(sc.total)}<small> / ${dt || '—'}</small></div>
-            <div class="osm-bar"><i style="width:${dt ? Math.min(100, sc.total / dt * 100) : 0}%"></i></div>
-            <div class="osm-sub"><span id="osm-marked">${sc.marked}/${sc.count}</span> questions marked · <span id="osm-save" class="osm-save"></span></div></div>
-          ${hasAssign ? `<label class="osm-unlock"><input type="checkbox" id="osm-unlock" ${unlockAll ? 'checked' : ''}> Also let me edit other teachers' questions</label>` : `<div class="osm-sub osm-pad">You're marking the whole paper. Use “My questions” on the previous screen if co-teachers split the paper.</div>`}
+          <div class="osm-score"><div class="osm-score-top"><div class="osm-score-num">${fmt1(sc.total)}<small> / ${dt || '—'}</small></div>
+            <div class="osm-sub"><span id="osm-marked">${sc.marked}/${sc.count}</span> marked · <span id="osm-save" class="osm-save"></span></div></div>
+            <div class="osm-bar"><i style="width:${dt ? Math.min(100, sc.total / dt * 100) : 0}%"></i></div></div>
+          ${hasAssign ? `<label class="osm-unlock"><input type="checkbox" id="osm-unlock" ${unlockAll ? 'checked' : ''}> Also let me edit other teachers' questions</label>` : ''}
+          <div class="osm-qwrap">
+          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''}" data-i="${i}" style="--c:${m ? markColor(m.v) : '#b8c0d0'}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
           <div class="osm-qs" id="osm-qs">
           ${paper.questions.map((q, i) => {
               const m = doc.marks?.[qk(i)]; const mine = editable(i); const loser = sc.losers.has(q.questionNumber || String(i + 1));
               const max = qMax(q);
-              return `<div class="osm-q ${mine ? '' : 'other'} ${m ? 'has' : ''} ${loser ? 'loser' : ''}" data-i="${i}">
-                <div class="osm-q-head"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${hasAssign && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}
-                  <span class="osm-max">out of ${fmt1(max)}</span></div>
+              return `<div class="osm-q ${mine ? '' : 'other'} ${m ? 'has' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${m ? markColor(m.v) : '#b8c0d0'}">
                 <div class="osm-q-row">
+                  <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${hasAssign && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}</div>
                   <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
                   <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m ? esc(Number(m.v)) : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
                   <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
                   <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
                 </div>
-                ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && m.v === v ? 'sel' : ''}" data-v="${v}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
+                ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${markColor(v)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
                 ${m && m.by !== me.uid ? `<div class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</div>` : ''}
                 ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
                 <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
               </div>`;
           }).join('')}
-          </div>
+          </div></div>
           <div class="osm-foot">
             <div class="osm-doneline">${paper.questions.length ? teachers.map(t => `<span class="osm-chip ${doc.done?.[t.uid] ? 'on' : ''}">${esc(shortName(t.name, teachers))}${doc.done?.[t.uid] ? ' ✓' : ''}</span>`).join('') : ''}</div>
             ${st.ready ? '<div class="osm-banner ok small">✔ Ready for analysis</div>' : ''}
@@ -608,6 +645,12 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     function wireSide() {
         sideEl.querySelector('#osm-unlock')?.addEventListener('change', e => { unlockAll = (e.target as HTMLInputElement).checked; renderSide(); });
+        sideEl.querySelectorAll<HTMLButtonElement>('.osm-rb').forEach(b => b.addEventListener('click', () => {
+            const row = sideEl.querySelector(`.osm-q[data-i="${b.dataset.i}"]`) as HTMLElement | null; const qs = sideEl.querySelector('#osm-qs') as HTMLElement | null; if (!row || !qs) return;
+            qs.scrollTo({ top: row.offsetTop - qs.offsetTop - 4, behavior: 'smooth' });
+            row.classList.add('flash'); setTimeout(() => row.classList.remove('flash'), 1200);
+            const inp = row.querySelector('.osm-in') as HTMLInputElement | null; if (inp && !inp.disabled) setTimeout(() => { inp.focus({ preventScroll: true }); inp.select(); }, 250);
+        }));
         const inputs = Array.from(sideEl.querySelectorAll<HTMLInputElement>('.osm-in'));
         inputs.forEach(inp => {
             const i = Number(inp.dataset.i);
@@ -673,7 +716,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const n = sideEl.querySelector('.osm-score-num'); if (n) n.innerHTML = `${fmt1(sc.total)}<small> / ${dt || '—'}</small>`;
         const mk = sideEl.querySelector('#osm-marked'); if (mk) mk.textContent = `${sc.marked}/${sc.count}`;
         const bar = sideEl.querySelector('.osm-bar i') as HTMLElement | null; if (bar) bar.style.width = (dt ? Math.min(100, sc.total / dt * 100) : 0) + '%';
-        sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); { const cur = doc.marks?.[qk(i)]?.v; r.querySelectorAll<HTMLElement>('.osm-cv').forEach(c => c.classList.toggle('sel', cur !== undefined && Number(c.dataset.v) === cur)); } r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
+        sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); r.style.setProperty('--c', doc.marks?.[qk(i)] ? markColor(doc.marks[qk(i)].v) : '#b8c0d0'); { const rb = sideEl.querySelector(`.osm-rb[data-i="${i}"]`) as HTMLElement | null; if (rb) { rb.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); rb.style.setProperty('--c', doc.marks?.[qk(i)] ? markColor(doc.marks[qk(i)].v) : '#b8c0d0'); } } { const cur = doc.marks?.[qk(i)]?.v; r.querySelectorAll<HTMLElement>('.osm-cv').forEach(c => c.classList.toggle('sel', cur !== undefined && Number(c.dataset.v) === cur)); } r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
     }
     async function toggleDone() {
         await flushMarks();   // a mark typed a moment ago must count
@@ -770,22 +813,25 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-zoombar button{border:0;background:transparent;color:#fff;font-size:1.1rem;min-width:34px;height:34px;border-radius:99px;cursor:pointer;font-family:inherit}.osm-zoombar button:hover{background:rgba(255,255,255,.18)}.osm-zoombar span{min-width:48px;text-align:center}.osm-zoombar #z-page{min-width:90px;color:#b9c2da}.osm-zoombar i{width:1px;height:20px;background:rgba(255,255,255,.25);margin:0 4px}
 .osm-page{width:100%;display:flex;flex-direction:column;align-items:center}.osm-pg-label{color:#aab3c9;font-size:.76rem;margin-bottom:6px;align-self:flex-start;max-width:100%}.osm-pg-n{color:#8fb4ff}
 .osm-pg-inner{position:relative;max-width:none;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.4);border-radius:3px}.osm-pg-inner img{width:100%;display:block;user-select:none}.osm-ink{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
-.osm-side{width:410px;max-width:44vw;background:var(--osm-card);color:var(--osm-fg);border-left:1px solid var(--osm-line);display:flex;flex-direction:column;min-height:0}
-.osm-score{padding:12px 18px 10px;border-bottom:1px solid var(--osm-line)}.osm-score-num{font-size:2.1rem;font-weight:700;line-height:1.1;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent}.osm-score-num small{font-size:1rem;font-weight:500;color:var(--osm-muted);-webkit-text-fill-color:var(--osm-muted)}
-.osm-bar{height:7px;background:var(--osm-line);border-radius:7px;margin:8px 0;overflow:hidden}.osm-bar i{display:block;height:100%;background:var(--osm-grad);transition:width .25s}
-.osm-save{font-size:.78rem}.osm-save.ok{color:var(--osm-ok)}.osm-save.bad{color:var(--osm-bad)}
-.osm-unlock{padding:8px 18px;font-size:.8rem;color:var(--osm-muted);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--osm-line)}.osm-pad{padding:8px 18px}
-.osm-qs{flex:1;overflow:auto;padding:8px 12px}
-.osm-q{border:1px solid var(--osm-line);border-radius:16px;padding:10px 12px;margin:8px 0;background:var(--osm-card)}.osm-q.has{border-left:4px solid var(--osm-accent)}.osm-q.other{opacity:.65}.osm-q.loser{opacity:.55}.osm-q.flash{box-shadow:0 0 0 3px #f5a623}
-.osm-q-head{display:flex;align-items:center;gap:8px}.osm-qn{font-weight:700;font-size:1.02rem}.osm-max{margin-left:auto;font-size:.8rem;color:var(--osm-muted)}
-.osm-tag{font-size:.66rem;padding:1px 8px;border-radius:99px;background:#ece6f7;color:#5b3fa0}.osm-tag.mine{background:#d9f3e6;color:var(--osm-ok)}
-.osm-q-row{display:flex;gap:6px;margin-top:8px;align-items:stretch}
-.osm-in{flex:1;min-width:0;font-size:1.4rem;font-weight:700;text-align:center;padding:6px;border:2px solid var(--osm-line);border-radius:12px;background:var(--osm-bg);color:var(--osm-fg);font-family:inherit}.osm-in:focus{outline:none;border-color:var(--osm-accent)}.osm-in:disabled{background:transparent;border-style:dashed}
-.osm-mini{padding:0 12px;min-width:44px;border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:12px;cursor:pointer;font-size:.9rem;font-family:inherit;font-weight:600}.osm-mini.step{font-size:1.4rem;line-height:1;min-width:48px}.osm-mini.full{background:var(--osm-soft);color:var(--osm-accent)}.osm-mini:hover:not(:disabled){background:var(--osm-soft);border-color:var(--osm-accent)}.osm-mini:disabled{opacity:.35}
-.osm-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
-.osm-cv{min-width:42px;height:38px;padding:0 6px;border:1.5px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:10px;cursor:pointer;font-size:.9rem;font-weight:600;font-family:inherit}.osm-cv:hover:not(:disabled){border-color:var(--osm-accent);background:var(--osm-soft)}.osm-cv.sel{background:var(--osm-grad);color:#fff;border-color:transparent;box-shadow:0 2px 8px rgba(37,117,252,.35)}.osm-cv:disabled{opacity:.35}
-.osm-by{font-size:.74rem;color:var(--osm-muted);margin-top:6px}
-.osm-det{margin-top:8px;font-size:.84rem}.osm-det summary{cursor:pointer;color:var(--osm-muted)}.osm-qtext,.osm-ans,.osm-ci{margin-top:6px;line-height:1.5;white-space:pre-wrap}.osm-ci{color:var(--osm-muted);font-size:.8rem}
+.osm-side{width:470px;max-width:48vw;background:var(--osm-card);color:var(--osm-fg);border-left:1px solid var(--osm-line);display:flex;flex-direction:column;min-height:0}
+.osm-score{padding:8px 14px 6px;border-bottom:1px solid var(--osm-line)}.osm-score-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.osm-score-num{font-size:1.45rem;font-weight:700;line-height:1.1;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent}.osm-score-num small{font-size:.8rem;font-weight:500;color:var(--osm-muted);-webkit-text-fill-color:var(--osm-muted)}
+.osm-bar{height:5px;background:var(--osm-line);border-radius:5px;margin:6px 0 0;overflow:hidden}.osm-bar i{display:block;height:100%;background:var(--osm-grad);transition:width .25s}
+.osm-save{font-size:.74rem}.osm-save.ok{color:var(--osm-ok)}.osm-save.bad{color:var(--osm-bad)}
+.osm-unlock{padding:6px 14px;font-size:.76rem;color:var(--osm-muted);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--osm-line)}
+.osm-qwrap{flex:1;display:flex;min-height:0}
+.osm-rail{width:54px;flex:none;overflow:auto;padding:6px 5px;border-right:1px solid var(--osm-line);display:flex;flex-direction:column;gap:4px;background:var(--osm-soft)}
+.osm-rb{border:1.5px solid var(--c);background:transparent;color:var(--c);border-radius:8px;height:26px;min-height:26px;font-size:.7rem;font-weight:700;cursor:pointer;font-family:inherit;padding:0 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.osm-rb.has{background:var(--c);color:#fff}.osm-rb:hover{filter:brightness(.92);transform:scale(1.05)}
+.osm-qs{flex:1;overflow:auto;padding:6px 8px 10px;scroll-behavior:auto}
+.osm-q{border:1px solid var(--osm-line);border-left:4px solid var(--c,#b8c0d0);border-radius:10px;padding:5px 8px 6px;margin:5px 0;background:var(--osm-card)}.osm-q.has{background:color-mix(in srgb,var(--c) 8%,var(--osm-card))}.osm-q.other{opacity:.65}.osm-q.loser{opacity:.55}.osm-q.flash{box-shadow:0 0 0 3px #f5a623}
+.osm-q-row{display:flex;gap:5px;align-items:center}.osm-qh{display:flex;align-items:baseline;gap:4px;min-width:62px;flex:1}.osm-qn{font-weight:700;font-size:.92rem;color:var(--c)}.osm-max{font-size:.72rem;color:var(--osm-muted)}
+.osm-tag{font-size:.6rem;padding:0 6px;border-radius:99px;background:#ece6f7;color:#5b3fa0}.osm-tag.mine{background:#d9f3e6;color:var(--osm-ok)}
+#osm-root .osm-in{width:62px;max-width:62px;min-width:0;flex:none;margin:0;font-size:1.05rem;font-weight:700;text-align:center;padding:2px;height:30px;border:2px solid var(--c,#b8c0d0);border-radius:9px;background:var(--osm-bg);color:var(--osm-fg);font-family:inherit}.osm-in:focus{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--c,#2575fc) 30%,transparent)}.osm-in:disabled{background:transparent;border-style:dashed}
+.osm-mini{height:30px;padding:0 9px;min-width:32px;border:1px solid var(--osm-line);background:var(--osm-card);color:var(--osm-fg);border-radius:9px;cursor:pointer;font-size:.8rem;font-family:inherit;font-weight:600}.osm-mini.step{font-size:1.15rem;line-height:1;min-width:30px;padding:0}.osm-mini.full{background:var(--osm-soft);color:var(--osm-accent)}.osm-mini:hover:not(:disabled){background:var(--osm-soft);border-color:var(--osm-accent)}.osm-mini:disabled{opacity:.35}
+.osm-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.osm-cv{min-width:31px;height:25px;padding:0 5px;border:1.5px solid var(--c);background:color-mix(in srgb,var(--c) 9%,transparent);color:var(--c);border-radius:8px;cursor:pointer;font-size:.74rem;font-weight:700;font-family:inherit}.osm-cv:hover:not(:disabled){background:color-mix(in srgb,var(--c) 22%,transparent)}.osm-cv.sel{background:var(--c);color:#fff;box-shadow:0 2px 6px color-mix(in srgb,var(--c) 45%,transparent)}.osm-cv:disabled{opacity:.35}
+.osm-by{font-size:.7rem;color:var(--osm-muted);margin-top:4px}
+.osm-note-edit{position:absolute;z-index:4;min-width:180px;max-width:80%;background:rgba(255,255,255,.96);border:2px solid #2575fc;border-radius:6px;padding:2px 6px;font-family:'Poppins',system-ui,sans-serif;font-weight:600;line-height:1.2;resize:none;outline:none;box-shadow:0 4px 14px rgba(0,0,0,.3)}
+.osm-det{margin-top:5px;font-size:.8rem}.osm-det summary{cursor:pointer;color:var(--osm-muted)}.osm-qtext,.osm-ans,.osm-ci{margin-top:6px;line-height:1.5;white-space:pre-wrap}.osm-ci{color:var(--osm-muted);font-size:.8rem}
 .osm-foot{border-top:1px solid var(--osm-line);padding:10px 12px;display:flex;flex-direction:column;gap:7px}.osm-doneline{display:flex;flex-wrap:wrap;gap:3px}.osm-doneline .osm-chip{font-size:.7rem;padding:1px 7px;margin-right:0}.osm-nav{display:flex;justify-content:space-between;gap:8px}
 #osm-toasts{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:9950;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;font-family:'Poppins',system-ui,sans-serif}
 .osm-toast{background:#2b3040;color:#fff;padding:11px 18px;border-radius:14px;font-size:.88rem;box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:min(560px,92vw)}.osm-toast.error{background:#c0392b}.osm-toast.success{background:#1e9e5a}

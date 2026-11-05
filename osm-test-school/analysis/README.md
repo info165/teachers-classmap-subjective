@@ -11,3 +11,7 @@
 6. `node finalize.js <workdir> --write --complete` writes the standard submission + report documents and turns the
    paper into a normal exam. Teachers then verify in the usual report screen; admin/teacher publish as usual.
    Nothing is ever written to `studentAssessments` here — students only see it after the normal publish.
+
+
+## Teacher text notes
+Teachers can type notes on the page. `manifest.json` has `students[].notes` ([{page, teacher, text}]). Read them while writing feedback and treat them as the teacher's own comments; the existing grading viewer only shows pen strokes, so notes are NOT drawn there.
