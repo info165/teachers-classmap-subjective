@@ -234,12 +234,45 @@ function wireClose(el: HTMLElement, fn?: () => void) {
 // ───────────────────────── step 3: publishing (same document the Exams "Publish" writes) ─────────────────────────
 const subRef = (p: Paper, uid: string) => paperRef(p.owner, p.id).collection('submissions').doc(uid);
 const plain = (o: any) => JSON.parse(JSON.stringify(o, (_k, v) => v === undefined ? null : v));
+// Student copies of the answer sheets carry every teacher's pen marks, notes, ticks and crosses baked into the picture.
+// Originals are never touched: new pictures are uploaded and only the student's published copy points at them.
+async function bakedSheetUrls(paper: Paper, uid: string, urls: string[]): Promise<string[]> {
+    const me = B.teacher()!;
+    const [stuSnap, detail] = await Promise.all([stuRef(paper, uid).get(), paperRef(paper.owner, paper.id).collection('submissions').doc(uid).collection('detail').get()]);
+    const pv = stuSnap.exists ? (stuSnap.data().pagesVersion ?? null) : null;
+    const inks: Record<string, Record<string, InkStroke[]>> = {};
+    detail.docs.forEach((d: any) => { if (d.id.startsWith('osmInk_') && (d.data().pv ?? null) === pv) inks[d.id.slice(7)] = d.data().pages || {}; });
+    const out = urls.slice();
+    for (let i = 0; i < urls.length; i++) {
+        const strokes: InkStroke[] = Object.values(inks).flatMap(pg => (pg[String(i)] || []));
+        if (!strokes.length) continue;
+        try {
+            const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 30000);
+            const blob = await (await fetch(urls[i], { mode: 'cors', signal: ctl.signal })).blob(); clearTimeout(to);
+            const bmp = await createImageBitmap(blob); const w = Math.min(2200, bmp.width); const h = Math.round(bmp.height * w / bmp.width);
+            const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d')!; g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
+            g.save(); g.scale(w / 1000, w / 1000); g.lineCap = 'round'; g.lineJoin = 'round';
+            strokes.forEach((st: any) => {
+                if (st.k) { const x = +st.x || 0, y = +st.y || 0, z = +st.w || 40; g.strokeStyle = st.k === 'tick' ? '#1e8e4e' : '#d93025'; g.lineWidth = z * .15; g.stroke(new Path2D(st.k === 'tick' ? `M${x - .45 * z} ${y + .02 * z} L${x - .12 * z} ${y + .38 * z} L${x + .5 * z} ${y - .4 * z}` : `M${x - .4 * z} ${y - .4 * z} L${x + .4 * z} ${y + .4 * z} M${x + .4 * z} ${y - .4 * z} L${x - .4 * z} ${y + .4 * z}`)); }
+                else if (st.t !== undefined) { const fs = +st.w || 24; g.font = `600 ${fs}px Poppins, Arial, sans-serif`; g.fillStyle = st.c || '#d93025'; g.strokeStyle = '#fff'; g.lineWidth = Math.max(3, fs / 6); String(st.t).split('\n').forEach((ln: string, li: number) => { g.strokeText(ln, +st.x || 0, (+st.y || 0) + li * fs * 1.2); g.fillText(ln, +st.x || 0, (+st.y || 0) + li * fs * 1.2); }); }
+                else if (st.d) { g.strokeStyle = st.c || '#d93025'; g.lineWidth = +st.w || 3; g.stroke(new Path2D(st.d)); }
+            });
+            g.restore();
+            const jpg: Blob = await new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error('encode')), 'image/jpeg', 0.92));
+            const path = `gradedReports/${me.uid}/${paper.id}/${uid}/published_p${i + 1}_${Date.now().toString(36)}.jpg`;
+            await B.storage.ref(path).put(jpg, { contentType: 'image/jpeg' });
+            out[i] = await B.storage.ref(path).getDownloadURL();
+        } catch (e: any) { throw new Error(`could not add the teachers' marks to sheet page ${i + 1} (${e?.message || e})`); }
+    }
+    return out;
+}
 async function publishOne(paper: Paper, uid: string) {
     const ref = subRef(paper, uid);
     const [s, r] = await Promise.all([ref.get(), ref.collection('detail').doc('report').get()]);
     if (!s.exists || !r.exists) throw new Error('This student has not been analysed yet.');
     const forStudent: any = { ...s.data(), questionWiseReport: r.data().questionWiseReport || [], submissionDocId: uid, assessmentId: paper.id, assessmentTitle: paper.title, subject: paper.subject, className: paper.className, section: paper.section, gradingTimestamp: new Date().toISOString() };
     delete forStudent.published;
+    if (Array.isArray(forStudent.answerSheetImageUrls) && forStudent.answerSheetImageUrls.length) forStudent.answerSheetImageUrls = await bakedSheetUrls(paper, uid, forStudent.answerSheetImageUrls);
     const batch = B.db.batch();
     batch.update(ref, { published: true });
     batch.set(B.db.collection('studentAssessments').doc(uid).collection('assessments').doc(`${paper.id}_${uid}`), plain(forStudent));
