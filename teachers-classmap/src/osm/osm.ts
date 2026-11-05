@@ -715,7 +715,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     const editBtn = (has: boolean) => has ? `${ICON.edit}<span>Edit</span>` : `${ICON.plus}<span>Add feedback</span>`;
     const doneBtn = `${ICON.check}<span>Done</span>`;
-    const plainKey = (t: any) => String(t ?? '').replace(/\\\(|\\\)|\\\[|\\\]/g, '').replace(/\\text\{([^}]*)\}/g, '$1').replace(/\\d?frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)').replace(/\\times/g, '×').replace(/\\([a-zA-Z]+)/g, '$1').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
+    // (answer key now rendered with MathJax)
+    const _unusedPlainKey = (t: any) => String(t ?? '').replace(/\\\(|\\\)|\\\[|\\\]/g, '').replace(/\\text\{([^}]*)\}/g, '$1').replace(/\\d?frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)').replace(/\\times/g, '×').replace(/\\([a-zA-Z]+)/g, '$1').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
     const rbox = (cls: string, label: string, text: string) => text ? `<div class="osm-rbox ${cls}"><div class="osm-rlab">${label}</div><div>${esc(text).replace(/\n/g, '<br>')}</div></div>` : '';
     function fbView(qr: any) {
         const { why, how, note } = fbParts(qr); const full = (Number(qr.marksAwarded) || 0) >= (Number(qr.maxMarksForQuestion) || 0);
@@ -733,7 +734,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
               <label>Teacher's note <small>(optional)</small></label><textarea class="osm-fbta" data-f="note" data-i="${i}" rows="2">${esc(note)}</textarea>
               <label>Why marks were lost</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
               <label>How to improve</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
-            <div class="osm-rq-foot"><button class="osm-btn tiny osm-fbedit" data-i="${i}">${editBtn(!!(why || how || note))}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div>${esc(plainKey(q.answer))}</div></details>` : ''}</div>`}
+            <div class="osm-rq-foot"><button class="osm-btn tiny osm-fbedit" data-i="${i}">${editBtn(!!(why || how || note))}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div class="osm-keymath">${B.fmtMath(esc(q.answer))}</div></details>` : ''}</div>`}
         </div>`;
     }
     function ovView(k: string, text: string) {
@@ -790,6 +791,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             fbs.scrollTo({ top: card2.offsetTop - fbs.offsetTop - 6, behavior: 'smooth' }); card2.classList.add('flash'); setTimeout(() => card2.classList.remove('flash'), 1200);
         }));
         (sideEl.querySelector('#osm-fbs') as HTMLElement).scrollTop = prev;
+        try { B.typeset(sideEl.querySelector('#osm-fbs') as HTMLElement); } catch { /* math stays readable */ }
         wireTabs();
         sideEl.querySelector('#osm-prev')?.addEventListener('click', async () => { await flushFb(); pos > 0 && openDesk(roster, paper, teachers, order[pos - 1], order, view); });
         sideEl.querySelector('#osm-next')?.addEventListener('click', async () => { await flushFb(); pos < order.length - 1 && openDesk(roster, paper, teachers, order[pos + 1], order, view); });

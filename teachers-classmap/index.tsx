@@ -24613,6 +24613,43 @@ window.osmAnalysisEdit = (reportIndex: number) => {
         } catch (e) { console.error('[osm analysis] save failed', e); if (st) { st.textContent = '⚠ Not saved — check connection'; st.style.color = '#e74c3c'; } }
     }, 900);
 };
+// Renders text containing \( ... \) / \[ ... \] math into HTML where each formula is a self-contained SVG picture (html2canvas-safe).
+let _osmMathFrame: Promise<any> | null = null;
+function _osmMathEngine(): Promise<any> {
+    if (_osmMathFrame) return _osmMathFrame;
+    _osmMathFrame = new Promise((resolve, reject) => {
+        const fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;left:-9999px;top:0;width:10px;height:10px;border:0;visibility:hidden;';
+        fr.srcdoc = '<!doctype html><html><head><script>window.MathJax={loader:{load:["[tex]/ams","[tex]/cases"]},tex:{packages:{"[+]":["ams","cases"]}},svg:{fontCache:"none"}};<\/script><script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"><\/script></head><body></body></html>';
+        fr.onload = () => { const t0 = Date.now(); const poll = () => { const mj = (fr.contentWindow as any)?.MathJax; if (mj?.startup?.promise) mj.startup.promise.then(() => resolve(mj)).catch(reject); else if (Date.now() - t0 > 20000) reject(new Error('MathJax svg load timeout')); else setTimeout(poll, 100); }; poll(); };
+        document.body.appendChild(fr);
+    });
+    _osmMathFrame.catch(() => { _osmMathFrame = null; });
+    return _osmMathFrame;
+}
+async function osmMathToHtml(text: any, opts: { maxChars?: number } = {}): Promise<string> {
+    let t = String(text ?? '');
+    const re = /\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]/g;
+    if (opts.maxChars && t.length > opts.maxChars) { // cut at a sentence end that is outside any formula
+        let cut = -1; const ranges: number[][] = []; let m: RegExpExecArray | null; re.lastIndex = 0; while ((m = re.exec(t))) ranges.push([m.index, m.index + m[0].length]);
+        for (let i = opts.maxChars; i > opts.maxChars * 0.5; i--) { if (/[.;]/.test(t[i]) && !ranges.some(r => i > r[0] && i < r[1])) { cut = i + 1; break; } }
+        t = cut > 0 ? t.slice(0, cut) : t; }
+    if (!/\\[(\[]/.test(t)) return _escH(t);
+    let mj: any = null; try { mj = await _osmMathEngine(); } catch { /* fall back to readable text */ }
+    let out = '', last = 0, m: RegExpExecArray | null; re.lastIndex = 0;
+    while ((m = re.exec(t))) {
+        out += _escH(t.slice(last, m.index)); last = m.index + m[0].length;
+        const tex = (m[1] ?? m[2]).trim(); const display = m[2] != null;
+        try {
+            if (!mj) throw new Error('no engine');
+            const node = await mj.tex2svgPromise(tex, { display: false }); const svg = node.querySelector('svg');
+            svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg'); svg.style.color = '#1b1f3b';
+            const vAlign = svg.style.verticalAlign || '0'; const ser = new XMLSerializer().serializeToString(svg).replace(/currentColor/g, '#1b1f3b');
+            const w = svg.getAttribute('width'), h = svg.getAttribute('height');
+            out += `<img alt="" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(ser)}" style="width:${w};height:${h};vertical-align:${vAlign};${display ? 'margin:0 2px;' : ''}">`;
+        } catch { out += _escH(tex); }
+    }
+    return out + _escH(t.slice(last));
+}
 async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) => void) {
     if (!report) return;
     const say = (t: string) => { try { onProgress?.(t); } catch { /* */ } toggleLoading(true, t); };
@@ -24692,7 +24729,9 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
             } catch (e) { console.warn('[osm pdf] sheet picture not available for page', pg + 1, e); }
         };
         for (let k = 0; k < need.length; k += 4) { say(`Loading answer sheet ${Math.min(k + 4, need.length)} of ${need.length}…`); await Promise.all(need.slice(k, k + 4).map(loadPic)); }
-        const box = (label: string, text: string, bg: string, lc: string) => text ? `<div style="background:${bg};border-radius:8px;padding:6px 9px;margin-top:6px;"><div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:${lc};">${label}</div><div style="font-size:10px;line-height:1.4;white-space:pre-wrap;">${_escH(text)}</div></div>` : '';
+        say('Typesetting formulas…');
+        const solHtml = new Map<any, string>(); for (const q of qs) { if (q.marksAwarded >= q.maxMarksForQuestion) continue; solHtml.set(q, await osmMathToHtml(q.answer, { maxChars: 700 })); }
+        const box = (label: string, text: string, bg: string, lc: string, raw?: string) => (raw || text) ? `<div style="background:${bg};border-radius:8px;padding:6px 9px;margin-top:6px;"><div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:${lc};">${label}</div><div style="font-size:10px;line-height:1.5;white-space:pre-wrap;">${raw ?? _escH(text)}</div></div>` : '';
         const card = (q: any) => {
             const g = Number(q.marksAwarded) || 0, m = Number(q.maxMarksForQuestion) || 0; const full = g >= m;
             const head = `<div style="display:flex;justify-content:space-between;align-items:center;"><b style="font-size:13px;color:#1a1f6e;">Q${_escH(q.questionNumber)}</b>${full && !q.teacherNote ? `<span style="font-size:9.5px;color:${green};font-weight:600;margin-left:8px;flex:1;">✓ Full marks</span>` : ''}<span style="background:${bgOf(g, m)};color:${colOf(g, m)};font-weight:700;font-size:10.5px;padding:3px 10px;border-radius:99px;">${f1(g)}/${f1(m)}</span></div>`;
@@ -24700,7 +24739,7 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
             if (full) return `<div style="border:1px solid #e3e6f3;border-radius:10px;padding:5px 10px;margin-bottom:6px;background:#fff;">${head}${note}</div>`;
             const why = q.whyLost || '', how = q.howToImprove || ''; const legacy = !why && !how ? String(q.finalFeedback || '') : '';
             return `<div style="border:1px solid #e3e6f3;border-radius:10px;padding:8px 10px;margin-bottom:7px;background:#fff;">${head}${note}
-              ${box('SOLUTION', clip(plain(q.answer), 240), '#efeafc', '#5b3fa0')}
+              ${box('SOLUTION', String(q.answer || ''), '#efeafc', '#5b3fa0', solHtml.get(q))}
               ${(why || how) ? `<div style="background:#e8f0ff;border-radius:8px;padding:6px 9px;margin-top:6px;">${why ? `<div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;">WHY YOU LOST MARKS</div><div style="font-size:10px;line-height:1.4;margin-bottom:${how ? 4 : 0}px;">${_escH(why)}</div>` : ''}${how ? `<div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;">HOW TO IMPROVE</div><div style="font-size:10px;line-height:1.4;">${_escH(how)}</div>` : ''}</div>` : box('FEEDBACK', legacy, '#e8f0ff', '#2a4fb0')}</div>`;
         };
         const IMGW = 430, GAP = 16, sheetHead = (pg: number, cont: boolean) => `<div style="background:#37474f;color:#fff;border-radius:10px;padding:8px 16px;display:flex;justify-content:space-between;font-size:10.5px;"><b>ANSWER SHEET — PAGE ${pg + 1}${cont ? ' (continued)' : ''}</b><span style="opacity:.85;">${_escH(nm.toUpperCase())} &nbsp;${_escH(report.rollNumber || '')}</span></div>`;
