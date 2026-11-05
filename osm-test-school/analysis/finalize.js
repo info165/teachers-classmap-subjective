@@ -20,6 +20,7 @@ function grounded(item,src){ const ni=norm(item); if(!ni) return false; const ns
   const t=toks(item); if(t.length<2) return ns.includes(ni); const set=new Set(toks(src)); return t.filter(x=>set.has(x)).length/t.length>=0.75; }
 const sources=q=>[q.answer,JSON.stringify(q.rubric||{}),q.checkingInstructions,(q.options||[]).join(' '),(q.markingSteps||[]).map(s=>s.description).join(' ')].filter(Boolean).join(' \n ');
 const fmtN=n=>String(Math.round(n*100)/100);
+const cleanAns=(t)=>String(t||'').replace(/\\\(|\\\)|\$|\\text\{|[{}]/g,'').replace(/\s+/g,' ').trim();
 // can `lost` be formed from a subset of the rubric's step marks?  (soft QA only)
 function subsetSum(arr,target){ let s=new Set([0]); arr.forEach(a=>{const n=new Set(s); s.forEach(x=>n.add(Math.round((x+a)*100)/100)); s=n;}); return s.has(Math.round(target*100)/100); }
 const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
@@ -48,28 +49,37 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
    if(!f.concept) {problems.push(`${tag}: concept (chapter-level group, e.g. "Atomic structure") missing`); bad=true;}
    if(f.questionType&&!TYPES.includes(f.questionType)) warnings.push(`${tag}: unknown questionType ${f.questionType}, using CONCEPTUAL`);
    if(counted&&!f.unattempted&&!(Number.isInteger(f.page)&&f.page>=1&&f.page<=nPages)) {problems.push(`${tag}: page (1-${nPages}) where the answer is written is required`); bad=true;}
-   let finalFeedback='', failureMode='', steps=[];
+   let finalFeedback='', failureMode='', steps=[], whyOut='', howOut='';
    const tnote=counted?String(((s.teacherNotes||{})[qn]||{}).text||'').trim():'';
    if(f.teacherFlag){ flags.push({q:qn,text:f.teacherFlag}); warnings.push(`${tag}: FOR THE TEACHER - ${f.teacherFlag}`); }
+   const isMCQ=/mcq|assertion|true/i.test(q.type||'');
+   // student-language guard: feedback the student reads must NEVER mention the key / rubric / marking scheme
+   const FORBID=/\b(rubric|answer key|mark scheme|marking scheme|the key\b|per the key|key'?s answer|key (?:says|gives|lists|expects|adds|names|has|wants|is)|the scheme\b)/i;
+   const mkSteps=(txt)=>Number.isInteger(f.page)?[{pageIndex:f.page,stepPoint:[],marks:0,isMissing:!!f.unattempted,comment:txt}]:[];
    if(lost){
      const unatt=!!f.unattempted;
-     if(!f.whyWrong||!f.howToImprove){problems.push(`${tag}: marks lost, so whyWrong and howToImprove are required`);bad=true;}
-     if(!FM.includes(f.failureMode)){problems.push(`${tag}: failureMode must be one of ${FM.join(', ')}`);bad=true;}
-     if(!unatt&&!f.studentWrote){problems.push(`${tag}: studentWrote (what the student actually wrote, briefly) is required`);bad=true;}
-     if(!Array.isArray(f.missedFromKey)||!f.missedFromKey.length){problems.push(`${tag}: missedFromKey (quote the key/rubric points that earned the lost marks) is required`);bad=true;}
-     else { const src=sources(q); f.missedFromKey.forEach(k=>{ if(!grounded(k,src)){problems.push(`${tag}: "${String(k).slice(0,70)}" is NOT found in the answer key / rubric - feedback may only use points from the key`);bad=true;} }); }
-     const text=`${f.headline||''} ${f.whyWrong||''} ${f.howToImprove||''}`;
-     if(got>0&&BAD_PARTIAL.test(text)){problems.push(`${tag}: partial marks were given but the feedback says it is wholly wrong`);bad=true;}
-     if(got===0&&!unatt&&GOOD_ZERO.test(text)){problems.push(`${tag}: ZERO marks but the feedback sounds positive ("${text.slice(0,60)}")`);bad=true;}
-     for(const mm of text.matchAll(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/g)){ if(Math.abs(+mm[1]-got)>1e-9||Math.abs(+mm[2]-max)>1e-9){ problems.push(`${tag}: feedback quotes "${mm[0]}" which does not match the teacher's marks`);bad=true; } }
-     const st=(q.markingSteps||[]).map(x=>Number(x.marks)).filter(x=>!isNaN(x));
-     if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match the rubric (teacher's mark is kept; worth a look)`);
-     failureMode=f.failureMode||'';
-     finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), `Where marks were lost: ${(f.whyWrong||'').trim()}`, `How to improve: ${(f.howToImprove||'').trim()}`].filter(Boolean).join('\n\n');
-     if(f.page) steps=[{pageIndex:f.page,stepPoint:[],marks:0,isMissing:unatt,   /* marks:0 so the student app shows the note as a lost-marks note (red), not a green tick */comment:`${tnote?`Teacher's note: ${tnote} `:''}${(f.whyWrong||'').trim()} ${(f.howToImprove||'').trim()}`.trim()}];
+     if(isMCQ && !unatt){
+       // mechanical, no AI call: state the correct answer in the student's own language
+       const ca=cleanAns(q.answer);
+       whyOut=ca?`The correct answer is ${ca}.`:'This answer was not correct.';
+       finalFeedback=whyOut; steps=mkSteps(whyOut);
+     } else {
+       if(!f.whyWrong||!f.howToImprove){problems.push(`${tag}: marks lost, so whyWrong and howToImprove are required`);bad=true;}
+       if(!FM.includes(f.failureMode)){problems.push(`${tag}: failureMode must be one of ${FM.join(', ')}`);bad=true;}
+       whyOut=(f.whyWrong||'').trim(); howOut=(f.howToImprove||'').trim();
+       const text=`${f.headline||''} ${whyOut} ${howOut}`;
+       if(FORBID.test(text)){problems.push(`${tag}: student-facing feedback must NOT mention the key / rubric / marking scheme - say the correct fact directly, in the student's own words (not "the key says")`);bad=true;}
+       if(got>0&&BAD_PARTIAL.test(text)){problems.push(`${tag}: partial marks were given but the feedback says it is wholly wrong`);bad=true;}
+       if(got===0&&!unatt&&GOOD_ZERO.test(text)){problems.push(`${tag}: ZERO marks but the feedback sounds positive ("${text.slice(0,60)}")`);bad=true;}
+       for(const mm of text.matchAll(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/g)){ if(Math.abs(+mm[1]-got)>1e-9||Math.abs(+mm[2]-max)>1e-9){ problems.push(`${tag}: feedback quotes "${mm[0]}" which does not match the teacher's marks`);bad=true; } }
+       const st=(q.markingSteps||[]).map(x=>Number(x.marks)).filter(x=>!isNaN(x));
+       if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match (teacher's mark kept; worth a look)`);
+       failureMode=f.failureMode||'';
+       finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`What went wrong: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
+       steps=mkSteps(`${tnote?`Teacher's note: ${tnote} `:''}${whyOut} ${howOut}`.trim());
+     }
    } else {
-     // full marks, or an OR alternative that is not counted: NO feedback is written
-     if(counted&&tnote){ finalFeedback=`Teacher's note: ${tnote}`; if(Number.isInteger(f.page)) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:false,comment:`Teacher's note: ${tnote}`}]; }
+     if(counted&&tnote){ whyOut=`Teacher's note: ${tnote}`; finalFeedback=whyOut; if(Number.isInteger(f.page)) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:false,comment:whyOut}]; }
      if(f.whyWrong||f.howToImprove||f.headline||f.feedback) warnings.push(`${tag}: ${loser?'uncounted alternative':'full marks'} - the feedback you wrote is ignored (none is shown)`);
      if(loser) finalFeedback='Not attempted';
    }
@@ -79,7 +89,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      checkingInstructions:q.checkingInstructions||'',rubric:q.rubric||{step_marking:'',keywords:[]},options:q.options||null,
      finalFeedback,failureMode,failurePoint:lost?(f.failurePoint||''):'',prerequisiteConcept:lost?(f.prerequisiteConcept||''):'',
      studentOcrAnswer:'',answerPageIndices:page?[page-1]:[],answerPageIndex:page?page-1:-1,requiresReview:false,stepWiseEvaluation:steps,
-     whyLost:lost?(f.whyWrong||'').trim():'',howToImprove:lost?(f.howToImprove||'').trim():'',teacherNote:tnote,studentWrote:lost?(f.studentWrote||''):'',headline:lost?(f.headline||'').trim():'',
+     whyLost:whyOut,howToImprove:howOut,teacherNote:tnote,headline:lost?(f.headline||'').trim():'',
      _runtimeOrLoser:loser,_unattemptedAlt:notChosen,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
   });
   if(bad||reports.length!==man.questions.length) continue;
@@ -100,20 +110,21 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const steps=Array.isArray(fb.nextSteps)?fb.nextSteps:[];
   steps.forEach(x=>{ if(!x||!x.concept||!x.step) problems.push(`${R}: every nextSteps item needs {concept, step}`); else if(!weakC.includes(x.concept)) problems.push(`${R}: nextSteps names "${x.concept}" which is not a weak concept (weak: ${weakC.join('; ')||'none'})`); });
   weakC.slice(0,5).forEach(c=>{ if(!steps.some(x=>x&&x.concept===c)) problems.push(`${R}: no next step for weak concept "${c}"`); });
-  if(!fb.insight||fb.insight.length<20) problems.push(`${R}: insight (1-2 sentences about the overall pattern) is required`);
   const pctAll=P.declaredTotal?Math.round(total/P.declaredTotal*100):0;
-  if(/\d+(\.\d+)?\s*%/.test(fb.insight||'')||/\d+(\.\d+)?\s*\/\s*\d+/.test(fb.insight||'')) problems.push(`${R}: insight must not quote scores/percentages (the score line is added automatically)`);
+  const strongCs=[...conceptMastery].filter(c=>c.pct>=70).sort((a,b)=>b.pct-a.pct).slice(0,2).map(c=>c.topic);
+  const weakCs=[...conceptMastery].filter(c=>c.pct<60).sort((a,b)=>a.pct-b.pct).slice(0,2).map(c=>c.topic);
+  const summaryText=`Scored ${fmtN(total)} out of ${fmtN(P.declaredTotal)} (${pctAll}%).`+(strongCs.length?` Strong on ${strongCs.join(' and ')}.`:'')+(weakCs.length?` The main areas to work on are ${weakCs.join(' and ')}.`:'');
   const areas=weakC.map(c=>{const ms=mastery.find(m=>m.topic===c); const why=reports.filter(r=>!r._runtimeOrLoser&&r.topic===c&&r.marksAwarded<r.maxMarksForQuestion).map(r=>`Q${r.questionNumber}`).join(', '); return `[${c}] ${fmtN(ms.scored)}/${fmtN(ms.max)} (${level(ms.pct)}) — marks lost in ${why}`;});
   const MODE={NEVER_KNEW:'Idea not known',KNEW_BUT_FORGOT:'Forgot a point',KNEW_BUT_MISAPPLIED:'Concept mixed up',KNEW_BUT_MISCALCULATED:'Calculation slip',KNEW_BUT_INCOMPLETE:'Answer incomplete'};
   const lostBy={}; counted.filter(r=>r.marksAwarded<r.maxMarksForQuestion&&r.failureMode).forEach(r=>{lostBy[r.failureMode]=(lostBy[r.failureMode]||0)+(r.maxMarksForQuestion-r.marksAwarded);});
   const lostByMode=Object.entries(lostBy).map(([k,v])=>({mode:k,label:MODE[k]||k,marks:+fmtN(v)})).sort((a,b)=>b.marks-a.marks);
-  const analysis={marksToWinBack:+fmtN(Math.max(0,(P.declaredTotal||0)-total)),lostByMode,conceptMastery,topicMastery:mastery,strengths:strengthC,weaknesses:weakC,nextSteps:steps.map(x=>({concept:x.concept,step:x.step})),insight:fb.insight||'',flags,generatedBy:'claude',generatedAt:new Date().toISOString(),edited:false};
+  const analysis={marksToWinBack:+fmtN(Math.max(0,(P.declaredTotal||0)-total)),lostByMode,conceptMastery,topicMastery:mastery,strengths:strengthC,weaknesses:weakC,nextSteps:steps.map(x=>({concept:x.concept,step:x.step})),insight:summaryText,flags,generatedBy:'claude',generatedAt:new Date().toISOString(),edited:false};
   const byType={}; counted.forEach(r=>{const t=r.questionType; (byType[t]??={type:t,scored:0,max:0,count:0}); byType[t].scored+=r.marksAwarded; byType[t].max+=r.maxMarksForQuestion; byType[t].count++;});
   const qtp=Object.values(byType).map(t=>({...t,pct:t.max?Math.round(t.scored/t.max*100):0}));
   const pct=t=>qtp.find(x=>x.type===t)?.pct??0;
   const intel={questionTypePerformance:qtp,summary:{totalMarksLost:Math.max(0,(P.declaredTotal||0)-total),marksLostByType:qtp.map(t=>({type:t.type,marksLost:t.max-t.scored,pct:t.pct})),derivationPct:pct('DERIVATION'),recallPct:pct('RECALL'),numericalPct:pct('NUMERICAL')}};
   const pencil={}; s.pages.forEach((pg,pi)=>{const strokes=[]; Object.values(s.ink||{}).forEach(doc=>((doc.pages||{})[String(pi)]||[]).forEach(st=>{ if(!pg.w||!pg.h||!st.d)return; const H=1000*pg.h/pg.w; const off=(H-1000)/2; strokes.push(st.d.replace(/([ML])\s*([\d.]+)\s+([\d.]+)/g,(_m,c,x,y)=>`${c} ${x} ${(parseFloat(y)-off).toFixed(1)}`)); })); if(strokes.length)pencil[pi]=strokes;});
-  const overall={summary:`Scored ${fmtN(total)} out of ${fmtN(P.declaredTotal)} (${pctAll}%). ${analysis.insight}`,strengths:strengthC,areasForImprovement:areas,nextSteps:analysis.nextSteps.map(x=>`${x.concept}: ${x.step}`),conceptMastery,topicMastery:mastery,analysisBy:'teacher_marking'};
+  const overall={summary:summaryText,strengths:strengthC,areasForImprovement:areas,nextSteps:analysis.nextSteps.map(x=>`${x.concept}: ${x.step}`),conceptMastery,topicMastery:mastery,analysisBy:'teacher_marking'};
   plan.push({s,reports,total,intel,pencil,overall,analysis});
  }
  console.log(`Students ready to finalize: ${plan.length}/${man.students.length}`);

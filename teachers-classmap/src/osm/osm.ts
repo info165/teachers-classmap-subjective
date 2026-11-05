@@ -773,7 +773,6 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-ov"><div class="osm-ovtitle">Learning summary</div>
               <div class="osm-win"><b>${fmt1(win)}</b><span>marks to win back out of ${dt || '—'}</span></div>
               ${ovBlock('summary', 'Summary', of.summary || '', false)}
-              ${lb.length ? (() => { const tot = lb.reduce((t, x) => t + (Number(x.marks) || 0), 0) || 1; return `<div class="osm-ovb"><div class="osm-ovh"><b>Where the marks went</b><span class="osm-muted">share of lost marks, by kind of mistake</span></div>${bars(lb.map(x => ({ label: x.label, val: `${Math.round(x.marks / tot * 100)}%`, pct: x.marks / tot * 100, col: '#d12f3a' })))}</div>`; })() : ''}
               <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted">weakest first · worked out from the marks</span></div>${bars(cm.map(c => ({ label: c.topic, val: `${c.pct}%`, pct: Number(c.pct) || 0, col: col(Number(c.pct) || 0) })))}</div>
               ${ovBlock('strengths', 'What you did well', linesOf(of.strengths), true)}
               ${ovBlock('areas', 'Where to improve', linesOf(of.areasForImprovement), true)}

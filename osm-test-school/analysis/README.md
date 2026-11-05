@@ -31,3 +31,13 @@ Each lost-mark question needs `failureMode`: NEVER_KNEW (no idea / blank), KNEW_
 - Teachers can add an optional reason on any question in the marking desk (✎). It is exported as `students[].teacherNotes` and shown to the student verbatim as "Teacher's note: …". Your whyWrong must agree with it. The declared paper total is always the total: never compare it with the sum of question marks.
 
 - An OR alternative the student did NOT choose (`altNotChosen:true` in the feedback JSON) is never a weakness, lost mark or mastery item, even when both alternatives scored 0 (tie): it is left out like any other uncounted alternative.
+
+## Student-language rules (enforced) + cost model — 2026-11-05
+- **Never reference the key/rubric/marking scheme to a student.** finalize.js rejects any student-facing feedback containing "the key", "key's answer", "key says/gives/…", "rubric", "marking scheme", "answer key". Say the correct fact directly, in the student's own words ("The vacuole has a single membrane; you chose the nucleus."), never "the key's answer is…".
+- **MCQ / True-False / Assertion-Reason wrong answers are auto-templated — NO model tokens.** finalize.js writes `The correct answer is <answer>.` straight from the paper. Do not hand-write these.
+- **Subjective lost marks: explain fully** (don't artificially cap) but in student voice: what went wrong + how to improve, grounded in the real answer. whyWrong/howToImprove/failureMode required.
+- **Summary is mechanical** (built from concept mastery, 100% accurate): "Scored X/Y (Z%). Strong on …. The main areas to work on are …." No AI `insight` field.
+- **Dropped scaffolding** (saves ~1/3 of generated tokens, nothing shown to anyone): `studentWrote` and `missedFromKey` are gone. Grounding is now checked by the sampling audit, not by self-quoting.
+- **Student learning summary** keeps: summary, concept mastery, what you did well, where to improve, next steps. "Where the marks went (by mistake type)" is removed from the student PDF and the teacher Feedback panel.
+- **Sampling audit (for now, Claude/Sonnet; later Gemini):** after generating, build review-packet-<roll>.md and have an independent pass check each lost-mark line against the real answer + marks + sheet image, and flag any over-attribution, wrong fact, or key/rubric wording. Fix before publish.
+- **Workflow:** user says "class X Science is done" → run `export.js "<School>" <class> <section> <subject>` to pick up every student all teachers have finished → generate feedback → finalize → audit sample → publish.
