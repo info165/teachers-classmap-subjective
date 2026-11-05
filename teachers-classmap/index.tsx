@@ -24725,6 +24725,15 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
                 const blob = await (await fetch(u, { mode: 'cors', signal: ctl.signal })).blob(); clearTimeout(to);
                 const bmp = await createImageBitmap(blob); const w = Math.min(1800, bmp.width); const h = Math.round(bmp.height * w / bmp.width);   // keep the handwriting sharp
                 const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d')!; g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
+                // the teachers' own pen marks, notes, ticks and crosses, drawn exactly where they were placed (ink coordinates are 0-1000 wide)
+                try {
+                    const k = w / 1000; g.save(); g.scale(k, k); g.lineCap = 'round'; g.lineJoin = 'round';
+                    Object.values((ctx && ctx.ink) || {}).forEach((pgs: any) => ((pgs || {})[String(pg)] || []).forEach((st: any) => {
+                        if (st.k) { const x = +st.x || 0, y = +st.y || 0, z = +st.w || 40; const P = new Path2D(st.k === 'tick' ? `M${x - .45 * z} ${y + .02 * z} L${x - .12 * z} ${y + .38 * z} L${x + .5 * z} ${y - .4 * z}` : `M${x - .4 * z} ${y - .4 * z} L${x + .4 * z} ${y + .4 * z} M${x + .4 * z} ${y - .4 * z} L${x - .4 * z} ${y + .4 * z}`); g.strokeStyle = st.k === 'tick' ? '#1e8e4e' : '#d93025'; g.lineWidth = z * .15; g.stroke(P); }
+                        else if (st.t !== undefined) { const fs = +st.w || 24; g.font = `600 ${fs}px Poppins, Arial, sans-serif`; g.fillStyle = st.c || '#d93025'; g.strokeStyle = '#fff'; g.lineWidth = Math.max(3, fs / 6); String(st.t).split('\n').forEach((ln: string, li: number) => { g.strokeText(ln, +st.x || 0, (+st.y || 0) + li * fs * 1.2); g.fillText(ln, +st.x || 0, (+st.y || 0) + li * fs * 1.2); }); }
+                        else if (st.d) { g.strokeStyle = st.c || '#d93025'; g.lineWidth = +st.w || 3; g.stroke(new Path2D(st.d)); }
+                    })); g.restore();
+                } catch (e) { console.warn('[osm pdf] annotations not drawn', e); }
                 picOf.set(pg, cv.toDataURL('image/jpeg', 0.93));
             } catch (e) { console.warn('[osm pdf] sheet picture not available for page', pg + 1, e); }
         };
