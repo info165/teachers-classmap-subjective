@@ -24613,8 +24613,8 @@ window.osmAnalysisEdit = (reportIndex: number) => {
         } catch (e) { console.error('[osm analysis] save failed', e); if (st) { st.textContent = '⚠ Not saved — check connection'; st.style.color = '#e74c3c'; } }
     }, 900);
 };
-window.osmDownloadAnalysisPdf = async (reportIndex: number) => {
-    const report: any = assessmentReports[reportIndex]; if (!report) return;
+async function osmAnalysisPdf(report: any, ctx: any) {
+    if (!report) return;
     const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => { if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; } const sc = document.createElement('script'); sc.src = src; sc.onload = () => resolve(); sc.onerror = () => reject(); document.head.appendChild(sc); });
     toggleLoading(true, 'Preparing analysis PDF…');
     try {
@@ -24622,7 +24622,6 @@ window.osmDownloadAnalysisPdf = async (reportIndex: number) => {
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
         const html2canvas = (window as any).html2canvas; const { jsPDF } = (window as any).jspdf;
         const of: any = report.overallFeedback || {}; const an: any = report.analysis || {}; const cm: any[] = of.conceptMastery || an.conceptMastery || [];
-        const ctx: any = currentAssessmentForReportView || currentAssessmentToGrade || {};
         const pct = report.maximumMarks > 0 ? Math.round(report.overallScore / report.maximumMarks * 100) : 0;
         const list = (arr: any) => (Array.isArray(arr) ? arr : []).map((x: any) => `<li style="margin:3px 0;">${formatMathExpressions(_escH(typeof x === 'string' ? x : x?.text || ''))}</li>`).join('');
         const lost = (report.questionWiseReport || []).filter((q: any) => !q._runtimeOrLoser && q.marksAwarded < q.maxMarksForQuestion && q.finalFeedback);
@@ -24654,7 +24653,8 @@ window.osmDownloadAnalysisPdf = async (reportIndex: number) => {
         pdf.save(`${(report.studentName || 'student').replace(/[^\w]+/g, '_')}_${(ctx.assessmentTitle || 'exam').replace(/[^\w]+/g, '_')}_analysis.pdf`);
     } catch (e) { console.error('[osm analysis pdf]', e); showFeedbackMessage('Could not create the analysis PDF.', 'error'); }
     finally { toggleLoading(false); }
-};
+}
+window.osmDownloadAnalysisPdf = async (reportIndex: number) => { const r = assessmentReports[reportIndex]; if (!r) return; await osmAnalysisPdf(r, currentAssessmentForReportView || currentAssessmentToGrade || {}); };
 
 function renderReportPageUI(report: AIFullAssessmentReport, reportIndex: number) {
     // 1. Check if Fullscreen is open
@@ -30882,6 +30882,7 @@ initOsm({
     typeset: (el) => typesetMathInContainer(el),
     orLosers: (reports, questions) => computeOrLoserQNums(reports as any, questions as any),
     backToClass: () => { closeOsm(); if (currentClassForView) handleLoadIndividualClassPage(currentClassForView); },
+    analysisPdf: (report: any, ctx: any) => osmAnalysisPdf(report, ctx),
 } as any);
 
 // Main execution starts here

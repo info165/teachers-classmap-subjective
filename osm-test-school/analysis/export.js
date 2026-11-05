@@ -22,7 +22,7 @@ const dl=(u,f)=>new Promise((res,rej)=>{https.get(u,r=>{if(r.statusCode!==200)re
   const meta=(await P.ref.collection('submissions').doc('_meta').collection('detail').doc('osm').get()).data()||{};
   const subs=await P.ref.collection('submissions').listDocuments(); // phantom docs are included by listDocuments
   const students=[]; const skipped=[];
-  for(const sd of subs){ if(sd.id==='_meta')continue; const det=await sd.collection('detail').get(); const osm=det.docs.find(d=>d.id==='osm')?.data(); if(!osm||!osm.pages?.length)continue;
+  for(const sd of subs){ if(sd.id==='_meta')continue; if((await sd.get()).exists&&!process.argv.includes('--redo')){skipped.push(sd.id+' already analysed (use --redo to export again)');continue;} const det=await sd.collection('detail').get(); const osm=det.docs.find(d=>d.id==='osm')?.data(); if(!osm||!osm.pages?.length)continue;
    const ink={}; det.docs.filter(d=>d.id.startsWith('osmInk_')).forEach(d=>ink[d.id.slice(7)]=d.data());
    students.push({studentUid:sd.id,osm,ink}); }
   const man={paper:{owner:P.owner,id:P.id,title:P.x.assessmentTitle,className:P.x.className,section:P.x.section,subject:P.x.subject,stream:P.x.stream||'',schoolName:school,declaredTotal:P.x.totalMarks,board:P.x.board||''},questions:P.x.questions,meta,students:[]};

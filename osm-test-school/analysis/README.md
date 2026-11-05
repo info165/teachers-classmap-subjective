@@ -8,9 +8,9 @@
    (one feedback per question, why marks were lost, how to improve, topic; plus strengths / weaknesses / next steps).
    The teacher's marks are FIXED — feedback is written to explain them, never to change them.
 5. `node finalize.js <workdir>` = dry run. It refuses feedback that contradicts a mark (e.g. "incorrect" on full marks).
-6. `node finalize.js <workdir> --write --complete` writes the standard submission + report documents and turns the
-   paper into a normal exam. Teachers then verify in the usual report screen; admin/teacher publish as usual.
-   Nothing is ever written to `studentAssessments` here — students only see it after the normal publish.
+6. `node finalize.js <workdir> --write` writes the report + analysis. The paper STAYS inside Teacher Marking (it never becomes an Exam):
+   each student's status becomes "Analysed · ready to publish"; the teacher opens Feedback (editable), then Publish.
+   Nothing is ever written to `studentAssessments` here — students only see it after Publish.
 
 
 ## Teacher text notes

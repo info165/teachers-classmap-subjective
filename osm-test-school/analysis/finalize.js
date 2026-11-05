@@ -132,13 +132,5 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   await sub.collection('detail').doc('report').set({questionWiseReport:reports,fullOcrText:''});
   console.log('  wrote',s.roll,s.name,`${total}/${P.declaredTotal}`,`concepts:${analysis.conceptMastery.length} topics:${analysis.topicMastery.length} strong:${analysis.strengths.length} weak:${analysis.weaknesses.length}`);
  }
- if(COMPLETE){
-  const all=await owner.collection('submissions').listDocuments(); let pending=0; for(const d of all){ if(d.id==='_meta')continue; const doc=await d.get(); if(!doc.exists){ const o=(await d.collection('detail').doc('osm').get()).data(); if(o?.pages?.length) pending++; } }
-  if(pending){console.log(`\n--complete skipped: ${pending} uploaded sheet(s) are not finalized yet (not ready or no feedback).`);return;}
-  const base=(await owner.get()).data(); await owner.update({assessmentMode:'osm_done'});
-  for(const r of rosters.docs){ const x=r.data(); if((x.stream||'')!==(P.stream||'')||x.teacherUid===P.owner)continue;
-   const dup=await db.collection('teachers').doc(x.teacherUid).collection('assessmentHistory').where('assessmentTitle','==',base.assessmentTitle).get(); if(dup.docs.some(d=>d.data().className===P.className&&d.data().section===P.section))continue;
-   const nref=db.collection('teachers').doc(x.teacherUid).collection('assessmentHistory').doc(); await nref.set({...base,assessmentId:nref.id,createdByTeacherUid:x.teacherUid,teacherName:x.teacherName||'',assessmentMode:'osm_done'}); console.log('  exam copy for co-teacher',x.teacherName); }
-  console.log('\nPaper is now a normal exam. Marks Given counts as verification: teacher or admin can Publish straight away; teachers can edit the analysis first.');
- }
+ if(COMPLETE) console.log('\nNote: --complete is no longer used. The paper stays inside Teacher Marking (status: Analysis done), and is published from there.');
 })().catch(e=>{console.error(e);process.exit(1)});

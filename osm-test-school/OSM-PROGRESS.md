@@ -77,3 +77,5 @@ Newest entries at the bottom. Read "DECISIONS" first, then "STATUS".
 - 2026-11-05 (analysis v2): strict analysis pipeline (see analysis/README.md "Analysis rules"), teacher "Analysis" card with autosave + separate analysis PDF,
   edit-save guard (existing recompute no longer overwrites teacher_marking analysis), Marks Given = verification. Demo: dummy school paper "Mid-Term Examination (demo)".
   Found: Q39 pair lacked reciprocal OR marker in the Newtown paper data (fixed only in the demo copy); counted marks add to 82 vs declared 80 (28.B.I/II).
+
+- 2026-11-05 (3-step flow): papers stay inside Teacher Marking: Marks -> Analysis (Claude, finalize --write) -> Publish. Roster statuses Analysed/Published; desk has Marking + Feedback tabs (editable, autosave, Analysis PDF, Publish/Unpublish). Nothing is added to the Exams card.
