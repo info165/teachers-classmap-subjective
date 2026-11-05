@@ -75,7 +75,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
        const st=(q.markingSteps||[]).map(x=>Number(x.marks)).filter(x=>!isNaN(x));
        if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match (teacher's mark kept; worth a look)`);
        failureMode=f.failureMode||'';
-       finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`What went wrong: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
+       finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`About this answer: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
        steps=mkSteps(`${tnote?`Teacher's note: ${tnote} `:''}${whyOut} ${howOut}`.trim());
      }
    } else {

@@ -451,7 +451,7 @@ function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: n
 }
 
 // ───────────────────────── SCREEN C: marking desk ─────────────────────────
-type InkStroke = { c: string; w: number; d?: string; t?: string; x?: number; y?: number };   // a pen stroke (d) or a text note (t at x,y)
+type InkStroke = { c: string; w: number; d?: string; t?: string; x?: number; y?: number; k?: 'tick' | 'cross' };   // a pen stroke (d) or a text note (t at x,y)
 async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; name: string }[], studentUid: string, order: string[], startView: 'mark' | 'fb' = 'mark') {
     clearListeners();
     const el = ensureRoot();
@@ -480,7 +480,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     const inks: Record<string, Record<string, InkStroke[]>> = {};   // teacherUid -> page -> strokes
     const nameOf = (u: string) => teachers.find(t => t.uid === u)?.name || 'Teacher';
     let zoom = Number((() => { try { return localStorage.getItem('osm-zoom'); } catch { return null; } })()) || 100;
-    let tool: 'none' | 'pen' | 'note' | 'erase' = ((): any => { try { const t = localStorage.getItem('osm-tool'); return t === 'pen' || t === 'note' || t === 'erase' ? t : 'none'; } catch { return 'none'; } })(); let penColor = '#d93025'; let penW = 3;
+    let tool: 'none' | 'pen' | 'note' | 'tick' | 'cross' | 'erase' = ((): any => { try { const t = localStorage.getItem('osm-tool'); return t === 'pen' || t === 'note' || t === 'tick' || t === 'cross' || t === 'erase' ? t : 'pen'; } catch { return 'pen'; } })(); let penColor = '#d93025'; let penW = 3;
     const theme = (() => { try { return localStorage.getItem('osm-theme') || 'light'; } catch { return 'light'; } })();
 
     el.innerHTML = `
@@ -489,14 +489,23 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <button class="osm-btn ghost" id="osm-close">${ICON.back}<span>Papers</span></button>
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
-            <div class="osm-seg"><button id="t-view" class="on" title="Scroll / look">☝ View</button><button id="t-pen" title="Pen">✏ Pen</button><button id="t-note" title="Type a text note on the page (click where it should go)">Aa Note</button><button id="t-erase" title="Erase your own pen marks or notes">⌫ Erase</button></div>
-            <input type="color" id="t-color" value="${penColor}" title="Pen colour"><select id="t-w" title="Pen width"><option value="2">Thin</option><option value="3" selected>Medium</option><option value="6">Thick</option></select>
-            <button class="osm-btn small" id="t-undo" title="Undo last stroke on the page you drew on">↶ Undo</button>
             <span class="osm-inkstat" id="osm-ink-status" title="Your pen marks and notes are saved to your own layer on this sheet. Co-teachers see them lighter; you can only erase your own."></span>
-            <button class="osm-btn small" id="t-theme" title="Dark / light panel">${theme === 'dark' ? '☀' : '☾'}</button>
           </div>
         </div>
         <div class="osm-desk-main">
+          <div class="osm-vtools" id="osm-vtools">
+            <button id="t-pen" class="vt" title="Pen (click again to stop drawing and just scroll)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>Pen</span></button>
+            <button id="t-note" class="vt" title="Type a text note on the page"><b style="font-size:15px;line-height:20px">Aa</b><span>Note</span></button>
+            <button id="t-tick" class="vt" title="Tick mark: click anywhere on the page to place it"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#1e8e4e" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Tick</span></button>
+            <button id="t-cross" class="vt" title="Cross mark: click anywhere on the page to place it"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#d93025" stroke-width="3.2" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg><span>Cross</span></button>
+            <button id="t-erase" class="vt" title="Erase your own marks (click one)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H9l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L12 20"/><path d="M7 11l6 6"/></svg><span>Erase</span></button>
+            <i class="vsep"></i>
+            <label class="vt colorlbl" title="Pen / note colour"><input type="color" id="t-color" value="${penColor}"><span>Colour</span></label>
+            <div class="vw" title="Size of pen, notes and marks"><button data-w="2" class="vwb"><i style="height:2px"></i><span>Thin</span></button><button data-w="3" class="vwb on"><i style="height:4px"></i><span>Medium</span></button><button data-w="6" class="vwb"><i style="height:7px"></i><span>Thick</span></button></div>
+            <i class="vsep"></i>
+            <button class="vt" id="t-undo" title="Undo the last mark on the page you worked on"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg><span>Undo</span></button>
+            <button class="vt" id="t-theme" title="Dark / light panel">${theme === 'dark' ? '☀' : '☾'}<span>Theme</span></button>
+          </div>
           <div class="osm-pages-wrap">
             <div class="osm-pages" id="osm-pages"></div>
             <div class="osm-zoombar"><button id="z-out" title="Zoom out">−</button><span id="z-val">${zoom}%</span><button id="z-in" title="Zoom in">+</button><i></i><button id="z-fit" title="Fit page to width">Fit</button><i></i><span id="z-page">Page 1 of ${doc.pages?.length || 0}</span></div>
@@ -524,9 +533,15 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         inner.style.width = zoom + '%';
         const svg = w.querySelector('svg') as SVGSVGElement; svg.setAttribute('viewBox', `0 0 1000 ${(1000 * d.h / d.w).toFixed(1)}`); svg.setAttribute('preserveAspectRatio', 'none');
     }
+    function stampSvg(s: InkStroke, op: number, tu: string, si: number) {
+        const x = Number(s.x) || 0, y = Number(s.y) || 0, z = Number(s.w) || 40;
+        const d = s.k === 'tick' ? `M${x - .45 * z} ${y + .02 * z} L${x - .12 * z} ${y + .38 * z} L${x + .5 * z} ${y - .4 * z}` : `M${x - .4 * z} ${y - .4 * z} L${x + .4 * z} ${y + .4 * z} M${x + .4 * z} ${y - .4 * z} L${x - .4 * z} ${y + .4 * z}`;
+        const col = s.k === 'tick' ? '#1e8e4e' : '#d93025';
+        return `<path d="${d}" stroke="${col}" stroke-width="${(z * .15).toFixed(1)}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${op}" data-t="${esc(tu)}" data-s="${si}" data-k="${s.k}"/>`;
+    }
     function renderInk(i: number) {
         const svg = pageWrap[i].querySelector('svg') as SVGSVGElement; if (!svg) return;
-        svg.innerHTML = Object.entries(inks).map(([tu, pg]) => (pg[String(i)] || []).map((s, si) => s.t !== undefined
+        svg.innerHTML = Object.entries(inks).map(([tu, pg]) => (pg[String(i)] || []).map((s, si) => s.k ? stampSvg(s, tu === me.uid ? 1 : 0.6, tu, si) : s.t !== undefined
              ? `<text x="${Number(s.x) || 0}" y="${Number(s.y) || 0}" fill="${esc(s.c)}" font-size="${Number(s.w) || 24}" font-weight="600" style="font-family:Poppins,system-ui,sans-serif;paint-order:stroke;stroke:#fff;stroke-width:${Math.max(3, (Number(s.w) || 24) / 6)}px;stroke-linejoin:round;white-space:pre" opacity="${tu === me.uid ? 1 : 0.6}" data-t="${esc(tu)}" data-s="${si}">${String(s.t).split('\n').map((ln, k) => `<tspan x="${Number(s.x) || 0}" dy="${k ? '1.2em' : '0'}">${esc(ln)}</tspan>`).join('')}</text>`
              : `<path d="${esc(s.d || '')}" stroke="${esc(s.c)}" stroke-width="${Number(s.w) || 3}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${tu === me.uid ? 1 : 0.55}" data-t="${esc(tu)}" data-s="${si}"/>`).join('')).join('');
         const mineN = (inks[me.uid]?.[String(i)] || []).length; const theirN = Object.entries(inks).reduce((a, [tu, pg]) => a + (tu === me.uid ? 0 : (pg[String(i)] || []).length), 0);
@@ -574,6 +589,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             const hit = (ev.target as Element).closest('path[data-t],text[data-t]') as SVGElement | null;
             if (hit && (hit as any).dataset.t === me.uid) { const arr = inks[me.uid]?.[String(i)]; if (arr) { arr.splice(Number((hit as any).dataset.s), 1); renderInk(i); saveInk(); } }
             return;
+        }
+        if (tool === 'tick' || tool === 'cross') {
+            ev.preventDefault(); const p = pt(ev); const z = penW === 2 ? 28 : penW === 3 ? 40 : 60;
+            (inks[me.uid] ||= {}); (inks[me.uid][String(i)] ||= []).push({ c: tool === 'tick' ? '#1e8e4e' : '#d93025', w: z, k: tool, x: Number(p.x.toFixed(1)), y: Number(p.y.toFixed(1)) });
+            lastInkPage = i; renderInk(i); saveInk(); return;
         }
         if (tool === 'note') {
             ev.preventDefault();
@@ -627,18 +647,17 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     })();
 
     // ---- tool buttons ------------------------------------------------------
+    const TOOLS = ['pen', 'note', 'tick', 'cross', 'erase'] as const;
     const setTool = (t: typeof tool) => {
         tool = t; try { localStorage.setItem('osm-tool', t); } catch { /* */ }
-        (['view', 'pen', 'note', 'erase'] as const).forEach(k => el.querySelector('#t-' + k)!.classList.toggle('on', (k === 'view' ? 'none' : k) === t));
+        TOOLS.forEach(k => el.querySelector('#t-' + k)!.classList.toggle('on', k === t));
         pageWrap.forEach((_, i) => renderInk(i));
     };
     setTool(tool);
-    el.querySelector('#t-view')!.addEventListener('click', () => setTool('none'));
-    el.querySelector('#t-pen')!.addEventListener('click', () => setTool('pen'));
-    el.querySelector('#t-note')!.addEventListener('click', () => setTool('note'));
-    el.querySelector('#t-erase')!.addEventListener('click', () => setTool('erase'));
+    // clicking the active tool again switches drawing off so the sheet can simply be scrolled
+    TOOLS.forEach(k => el.querySelector('#t-' + k)!.addEventListener('click', () => setTool(tool === k ? 'none' : k)));
     (el.querySelector('#t-color') as HTMLInputElement).addEventListener('input', e => { penColor = (e.target as HTMLInputElement).value; });
-    (el.querySelector('#t-w') as HTMLSelectElement).addEventListener('change', e => { penW = Number((e.target as HTMLSelectElement).value); });
+    el.querySelectorAll('.vwb').forEach(b => b.addEventListener('click', () => { penW = Number((b as HTMLElement).dataset.w); el.querySelectorAll('.vwb').forEach(o => o.classList.toggle('on', o === b)); }));
     el.querySelector('#t-undo')!.addEventListener('click', () => { if (lastInkPage < 0) return; const arr = inks[me.uid]?.[String(lastInkPage)]; if (arr?.length) { arr.pop(); renderInk(lastInkPage); saveInk(); } });
     const setZoom = (z: number) => { zoom = Math.max(40, Math.min(300, z)); (el.querySelector('#z-val') as HTMLElement).textContent = zoom + '%'; try { localStorage.setItem('osm-zoom', String(zoom)); } catch { /* */ } pageWrap.forEach((_, i) => sizePage(i)); };
     el.querySelector('#z-in')!.addEventListener('click', () => setZoom(zoom + 10));
@@ -650,7 +669,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         pageWrap.forEach((w, i) => { if (w.getBoundingClientRect().top <= mid) cur = i; });
         pageInd.textContent = `Page ${cur + 1} of ${pageWrap.length}`;
     }, { passive: true });
-    el.querySelector('#t-theme')!.addEventListener('click', () => { const dk = desk.classList.toggle('dark'); try { localStorage.setItem('osm-theme', dk ? 'dark' : 'light'); } catch { /* */ } (el.querySelector('#t-theme') as HTMLElement).textContent = dk ? '☀' : '☾'; });
+    el.querySelector('#t-theme')!.addEventListener('click', () => { const dk = desk.classList.toggle('dark'); try { localStorage.setItem('osm-theme', dk ? 'dark' : 'light'); } catch { /* */ } ((el.querySelector('#t-theme') as HTMLElement).firstChild as Text).textContent = dk ? '☀' : '☾'; });
 
     // ---- marks panel -------------------------------------------------------
     const saveTimers: Record<number, any> = {}; const pendingRun: Record<number, () => void> = {};
@@ -720,7 +739,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     const rbox = (cls: string, label: string, text: string) => text ? `<div class="osm-rbox ${cls}"><div class="osm-rlab">${label}</div><div>${esc(text).replace(/\n/g, '<br>')}</div></div>` : '';
     function fbView(qr: any) {
         const { why, how, note } = fbParts(qr); const full = (Number(qr.marksAwarded) || 0) >= (Number(qr.maxMarksForQuestion) || 0);
-        const wh = (why || how) ? `<div class="osm-rbox blue">${why ? `<div class="osm-rlab">WHY YOU LOST MARKS</div><div>${esc(why).replace(/\n/g, '<br>')}</div>` : ''}${how ? `<div class="osm-rlab" style="margin-top:${why ? 7 : 0}px">HOW TO IMPROVE</div><div>${esc(how).replace(/\n/g, '<br>')}</div>` : ''}</div>` : '';
+        const wh = (why || how) ? `<div class="osm-rbox blue">${why ? `<div class="osm-rlab">ABOUT THIS ANSWER</div><div>${esc(why).replace(/\n/g, '<br>')}</div>` : ''}${how ? `<div class="osm-rlab" style="margin-top:${why ? 7 : 0}px">TO IMPROVE NEXT TIME</div><div>${esc(how).replace(/\n/g, '<br>')}</div>` : ''}</div>` : '';
         return rbox('amber', "TEACHER'S NOTE", note) + wh + ((!note && !why && !how && !full) ? '<div class="osm-muted" style="font-size:.8rem">No feedback written yet.</div>' : '');
     }
     function fbCard(qr: any, i: number) {
@@ -732,8 +751,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           ${loser ? '' : `<div class="osm-rq-view" data-i="${i}">${fbView(qr)}</div>
             <div class="osm-rq-edit" data-i="${i}" style="display:none">
               <label>Teacher's note <small>(optional)</small></label><textarea class="osm-fbta" data-f="note" data-i="${i}" rows="2">${esc(note)}</textarea>
-              <label>Why marks were lost</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
-              <label>How to improve</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
+              <label>About this answer</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
+              <label>To improve next time</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
             <div class="osm-rq-foot"><button class="osm-btn tiny osm-fbedit" data-i="${i}">${editBtn(!!(why || how || note))}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div class="osm-keymath">${B.fmtMath(esc(q.answer))}</div></details>` : ''}</div>`}
         </div>`;
     }
@@ -1082,6 +1101,14 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-vtools{width:68px;flex:none;display:flex;flex-direction:column;align-items:stretch;gap:4px;padding:10px 6px;background:#242938;overflow-y:auto;border-right:1px solid rgba(255,255,255,.08)}
+.osm-vtools .vt{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;border-radius:11px;background:transparent;color:#dfe4f2;padding:7px 2px;cursor:pointer;font-family:inherit;transition:background .12s,transform .08s}
+.osm-vtools .vt span{font-size:10px;font-weight:500;letter-spacing:.2px}.osm-vtools .vt:hover{background:rgba(255,255,255,.1)}.osm-vtools .vt:active{transform:scale(.94)}
+.osm-vtools .vt.on{background:#fff;color:#2575fc;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.osm-vtools .vsep{display:block;height:1px;background:rgba(255,255,255,.14);margin:5px 6px}
+.osm-vtools .colorlbl input{width:30px;height:26px;border:0;border-radius:7px;padding:0;background:none;cursor:pointer}
+.osm-vtools .vw{display:flex;flex-direction:column;gap:3px}.osm-vtools .vwb{border:0;border-radius:9px;background:transparent;color:#dfe4f2;padding:5px 2px;cursor:pointer;font-family:inherit;display:flex;flex-direction:column;align-items:center;gap:3px}
+.osm-vtools .vwb i{display:block;width:28px;background:currentColor;border-radius:4px}.osm-vtools .vwb span{font-size:9.5px}.osm-vtools .vwb:hover{background:rgba(255,255,255,.1)}.osm-vtools .vwb.on{background:rgba(255,255,255,.2);color:#fff;box-shadow:inset 0 0 0 1.5px #fff}
 .osm-pages-wrap{flex:1;position:relative;min-width:0;display:flex}
 .osm-pages{flex:1;overflow:auto;padding:18px 24px 90px;background:#2b3040;display:flex;flex-direction:column;align-items:center;gap:18px}
 .osm-zoombar{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:rgba(30,34,50,.92);color:#fff;border-radius:99px;padding:5px 8px;box-shadow:0 6px 24px rgba(0,0,0,.4);backdrop-filter:blur(6px);font-size:.84rem;z-index:3}
