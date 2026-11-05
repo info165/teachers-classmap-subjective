@@ -5,9 +5,10 @@
 // answer key / rubric with quoted evidence that is machine-checked against the key; concept mastery is computed from marks, never guessed.
 const {admin,db}=require('./common'); const fs=require('fs'),path=require('path');
 const { computeOrLoserQNums } = require('./orRule');
+const ONLY=(process.argv.includes('--only')?String(process.argv[process.argv.indexOf('--only')+1]).split(','):null);
 const dir=process.argv[2]; const WRITE=process.argv.includes('--write'); const COMPLETE=process.argv.includes('--complete');
 if(!dir){console.log('usage: node finalize.js <workdir> [--write] [--complete]');process.exit(1);}
-const man=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json'),'utf8')); const P=man.paper;
+const man=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json'),'utf8')); const P=man.paper; if(ONLY) man.students=man.students.filter(s=>ONLY.includes(String(s.roll)));
 const FM=['NEVER_KNEW','KNEW_BUT_FORGOT','KNEW_BUT_MISAPPLIED','KNEW_BUT_MISCALCULATED','KNEW_BUT_INCOMPLETE'];
 const TYPES=['RECALL','CONCEPTUAL','NUMERICAL','DERIVATION','DIAGRAM','APPLICATION','REASONING'];
 const BAD_PARTIAL=/\b(completely (wrong|incorrect)|totally (wrong|incorrect)|no marks|zero marks|entirely wrong|not attempted)\b/i;
@@ -77,6 +78,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      checkingInstructions:q.checkingInstructions||'',rubric:q.rubric||{step_marking:'',keywords:[]},options:q.options||null,
      finalFeedback,failureMode,failurePoint:lost?(f.failurePoint||''):'',prerequisiteConcept:lost?(f.prerequisiteConcept||''):'',
      studentOcrAnswer:'',answerPageIndices:page?[page-1]:[],answerPageIndex:page?page-1:-1,requiresReview:false,stepWiseEvaluation:steps,
+     whyLost:lost?(f.whyWrong||'').trim():'',howToImprove:lost?(f.howToImprove||'').trim():'',teacherNote:tnote,studentWrote:lost?(f.studentWrote||''):'',headline:lost?(f.headline||'').trim():'',
      _runtimeOrLoser:loser,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
   });
   if(bad||reports.length!==man.questions.length) continue;
@@ -101,7 +103,10 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const pctAll=P.declaredTotal?Math.round(total/P.declaredTotal*100):0;
   if(/\d+(\.\d+)?\s*%/.test(fb.insight||'')||/\d+(\.\d+)?\s*\/\s*\d+/.test(fb.insight||'')) problems.push(`${R}: insight must not quote scores/percentages (the score line is added automatically)`);
   const areas=weakC.map(c=>{const ms=mastery.find(m=>m.topic===c); const why=reports.filter(r=>!r._runtimeOrLoser&&r.topic===c&&r.marksAwarded<r.maxMarksForQuestion).map(r=>`Q${r.questionNumber}`).join(', '); return `[${c}] ${fmtN(ms.scored)}/${fmtN(ms.max)} (${level(ms.pct)}) — marks lost in ${why}`;});
-  const analysis={conceptMastery,topicMastery:mastery,strengths:strengthC,weaknesses:weakC,nextSteps:steps.map(x=>({concept:x.concept,step:x.step})),insight:fb.insight||'',flags,generatedBy:'claude',generatedAt:new Date().toISOString(),edited:false};
+  const MODE={NEVER_KNEW:'Idea not known',KNEW_BUT_FORGOT:'Forgot a point',KNEW_BUT_MISAPPLIED:'Concept mixed up',KNEW_BUT_MISCALCULATED:'Calculation slip',KNEW_BUT_INCOMPLETE:'Answer incomplete'};
+  const lostBy={}; counted.filter(r=>r.marksAwarded<r.maxMarksForQuestion&&r.failureMode).forEach(r=>{lostBy[r.failureMode]=(lostBy[r.failureMode]||0)+(r.maxMarksForQuestion-r.marksAwarded);});
+  const lostByMode=Object.entries(lostBy).map(([k,v])=>({mode:k,label:MODE[k]||k,marks:+fmtN(v)})).sort((a,b)=>b.marks-a.marks);
+  const analysis={marksToWinBack:+fmtN(Math.max(0,(P.declaredTotal||0)-total)),lostByMode,conceptMastery,topicMastery:mastery,strengths:strengthC,weaknesses:weakC,nextSteps:steps.map(x=>({concept:x.concept,step:x.step})),insight:fb.insight||'',flags,generatedBy:'claude',generatedAt:new Date().toISOString(),edited:false};
   const byType={}; counted.forEach(r=>{const t=r.questionType; (byType[t]??={type:t,scored:0,max:0,count:0}); byType[t].scored+=r.marksAwarded; byType[t].max+=r.maxMarksForQuestion; byType[t].count++;});
   const qtp=Object.values(byType).map(t=>({...t,pct:t.max?Math.round(t.scored/t.max*100):0}));
   const pct=t=>qtp.find(x=>x.type===t)?.pct??0;

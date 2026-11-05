@@ -1,0 +1,12 @@
+[
+ {
+  "origin": [
+   "https://classmap-students.web.app"
+  ],
+  "method": [
+   "GET",
+   "HEAD"
+  ],
+  "maxAgeSeconds": 3600
+ }
+]

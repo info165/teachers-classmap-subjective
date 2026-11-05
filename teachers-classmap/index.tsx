@@ -24616,43 +24616,109 @@ window.osmAnalysisEdit = (reportIndex: number) => {
 async function osmAnalysisPdf(report: any, ctx: any) {
     if (!report) return;
     const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => { if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; } const sc = document.createElement('script'); sc.src = src; sc.onload = () => resolve(); sc.onerror = () => reject(); document.head.appendChild(sc); });
-    toggleLoading(true, 'Preparing analysis PDF…');
+    toggleLoading(true, 'Preparing the PDF…');
+    const made: HTMLElement[] = [];
     try {
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
         const html2canvas = (window as any).html2canvas; const { jsPDF } = (window as any).jspdf;
-        const of: any = report.overallFeedback || {}; const an: any = report.analysis || {}; const cm: any[] = of.conceptMastery || an.conceptMastery || [];
-        const pct = report.maximumMarks > 0 ? Math.round(report.overallScore / report.maximumMarks * 100) : 0;
-        const list = (arr: any) => (Array.isArray(arr) ? arr : []).map((x: any) => `<li style="margin:3px 0;">${formatMathExpressions(_escH(typeof x === 'string' ? x : x?.text || ''))}</li>`).join('');
-        const lost = (report.questionWiseReport || []).filter((q: any) => !q._runtimeOrLoser && q.marksAwarded < q.maxMarksForQuestion && q.finalFeedback);
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;background:#fff;color:#2c3e50;font-family:Poppins,Arial,sans-serif;padding:34px 38px;box-sizing:border-box;';
-        wrap.innerHTML = `
-          <div style="background:linear-gradient(135deg,#2575fc,#6a11cb);color:#fff;border-radius:14px;padding:18px 22px;">
-            <div style="font-size:.7rem;letter-spacing:2px;opacity:.85;">PERFORMANCE ANALYSIS</div>
-            <div style="font-size:1.5rem;font-weight:700;margin-top:4px;">${_escH(report.studentName)} <span style="font-size:.85rem;font-weight:400;opacity:.85;">#${_escH(report.rollNumber || '')}</span></div>
-            <div style="font-size:.85rem;opacity:.92;margin-top:4px;">${_escH(teacherProfile?.schoolName || '')} · Class ${_escH(ctx.className || report.className || '')}-${_escH(ctx.section || report.section || '')} · ${_escH(ctx.subject || report.subject || '')} · ${_escH(ctx.assessmentTitle || '')}</div>
-            <div style="font-size:1.6rem;font-weight:700;margin-top:10px;">${_escH(report.overallScore)} / ${_escH(report.maximumMarks)} <span style="font-size:1rem;font-weight:500;">(${pct}%)</span></div>
-          </div>
-          <h3 style="font-size:1rem;margin:18px 0 6px;">Summary</h3><div style="font-size:.88rem;line-height:1.55;">${formatMathExpressions(_escH(of.summary || ''))}</div>
-          <h3 style="font-size:1rem;margin:18px 0 6px;">Concept mastery</h3>
-          <table style="width:100%;border-collapse:collapse;font-size:.8rem;">${cm.map(c => `<tr><td style="padding:4px 6px;width:38%;">${_escH(c.topic)}</td><td style="padding:4px 6px;width:11%;text-align:right;">${_escH(c.scored)}/${_escH(c.max)}</td><td style="padding:4px 6px;width:35%;"><div style="height:9px;background:#e9edf5;border-radius:6px;overflow:hidden;"><i style="display:block;height:100%;width:${Math.max(0, Math.min(100, Number(c.pct) || 0))}%;background:${_lvlColor[c.level] || '#7f8c8d'};"></i></div></td><td style="padding:4px 6px;font-weight:700;color:${_lvlColor[c.level] || '#7f8c8d'};">${_escH(c.level)} ${_escH(c.pct)}%</td></tr>`).join('')}</table>
-          <div style="display:flex;gap:18px;margin-top:6px;"><div style="flex:1;"><h3 style="font-size:1rem;margin:16px 0 4px;color:#1e9e5a;">Strengths</h3><ul style="font-size:.84rem;padding-left:18px;margin:0;">${list(of.strengths) || '<li>—</li>'}</ul></div>
-          <div style="flex:1;"><h3 style="font-size:1rem;margin:16px 0 4px;color:#e74c3c;">Areas to improve</h3><ul style="font-size:.84rem;padding-left:18px;margin:0;">${list(of.areasForImprovement) || '<li>—</li>'}</ul></div></div>
-          <h3 style="font-size:1rem;margin:18px 0 4px;">Next steps</h3><ol style="font-size:.86rem;padding-left:20px;margin:0;">${list(of.nextSteps) || '<li>—</li>'}</ol>
-          ${lost.length ? `<h3 style="font-size:1rem;margin:20px 0 6px;">Where marks were lost</h3>${lost.map((q: any) => `<div style="border:1px solid #e3e8f0;border-left:4px solid #e08a00;border-radius:8px;padding:8px 11px;margin:6px 0;page-break-inside:avoid;"><div style="font-weight:700;font-size:.84rem;">Q${_escH(q.questionNumber)} <span style="float:right;color:#e08a00;">${_escH(q.marksAwarded)}/${_escH(q.maxMarksForQuestion)}</span></div><div style="font-size:.8rem;line-height:1.5;white-space:pre-wrap;margin-top:3px;">${formatMathExpressions(_escH(q.finalFeedback))}</div></div>`).join('')}` : ''}
-          <div style="margin-top:18px;font-size:.68rem;color:#95a5a6;">Questions answered with full marks carry no feedback. Report generated ${new Date().toLocaleDateString('en-GB')} · ClassMap</div>`;
-        document.body.appendChild(wrap);
+        const of: any = report.overallFeedback || {}; const an: any = report.analysis || {};
+        const dt = Number(report.maximumMarks) || 0; const score = Number(report.overallScore) || 0; const pct = dt ? Math.round(score / dt * 100) : 0;
+        const all: any[] = report.questionWiseReport || []; const qs = all.filter(q => !q._runtimeOrLoser);
+        const nm = String(report.studentName || '').trim(); const first = nm.split(' ')[0] ? nm.split(' ')[0].charAt(0).toUpperCase() + nm.split(' ')[0].slice(1).toLowerCase() : 'there';
+        const f1 = (n: number) => String(Math.round(n * 100) / 100);
+        const plain = (t: any) => String(t ?? '').replace(/\\\(|\\\)|\\\[|\\\]/g, '').replace(/\\text\{([^}]*)\}/g, '$1').replace(/\\d?frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)').replace(/\\times/g, '×').replace(/\\cdot/g, '·').replace(/\\rightarrow/g, '→').replace(/\\Rightarrow/g, '⇒').replace(/\\circ/g, '°').replace(/\\(?:left|right)/g, '').replace(/[{}]/g, '').replace(/\\([a-zA-Z]+)/g, '$1').replace(/\s+/g, ' ').trim();
+        const clip = (t: string, n: number) => t.length > n ? t.slice(0, n).replace(/\s+\S*$/, '') + '…' : t;
+        const green = '#1e8e4e', amber = '#d17a0a', red = '#d12f3a';
+        const colOf = (g: number, m: number) => g >= m ? green : g <= 0 ? red : amber;
+        const bgOf = (g: number, m: number) => g >= m ? '#e8f6ee' : g <= 0 ? '#fdeaec' : '#fff3e0';
+        const grade = pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 70 ? 'B+' : pct >= 60 ? 'B' : pct >= 50 ? 'C' : 'D';
+        const gcol = pct >= 80 ? green : pct >= 50 ? amber : red;
+        const msg = pct >= 80 ? [`Excellent work, ${first}.`, 'Keep it up. A few points to polish are below.'] : pct >= 60 ? [`Good effort, ${first}.`, 'You have a solid base. Let us strengthen the areas below.'] : [`Nice try, ${first}.`, 'You have a base to build on. Let us strengthen the areas below.'];
+        const nFull = qs.filter(q => q.marksAwarded >= q.maxMarksForQuestion).length, nZero = qs.filter(q => !(q.marksAwarded > 0)).length, nPart = qs.length - nFull - nZero;
+        const ff = 'font-family:Poppins,Arial,sans-serif;color:#1b1f3b;box-sizing:border-box;';
+        const school = teacherProfile?.schoolName || ''; const when = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+        const sub = ctx.subject || report.subject || '', cls = `Class ${ctx.className || report.className || ''}-${ctx.section || report.section || ''}`, test = ctx.assessmentTitle || '';
+        const mk = (w: number, html: string) => { const d = document.createElement('div'); d.style.cssText = `position:fixed;left:-20000px;top:0;width:${w}px;background:#fff;${ff}`; d.innerHTML = html; document.body.appendChild(d); made.push(d); return d; };
+        const chips = (arr: any[], max: number, col: string) => { const a = (Array.isArray(arr) ? arr : []).map(x => String(typeof x === 'string' ? x : x?.text || '')); const shown = a.slice(0, max).map(t => `<span style="display:inline-block;margin:3px 6px 3px 0;padding:6px 12px;border-radius:99px;background:#fff;border:1px solid ${col};font-size:12px;font-weight:600;">${_escH(t.replace(/^\[([^\]]+)\].*$/, '$1'))}</span>`).join(''); return shown + (a.length > max ? `<span style="display:inline-block;margin:3px 0;padding:6px 12px;border-radius:99px;background:#fff;border:1px solid ${col};font-size:12px;font-weight:600;">+${a.length - max} more</span>` : '') || '<span style="color:#7f8c8d;font-size:12px;">—</span>'; };
+        const C = 2 * Math.PI * 52;
+        // ── page 1: the score page ──
+        const p1 = mk(794, `<div style="background:linear-gradient(160deg,#1a1f6e,#3b2d9c);padding:40px 44px 70px;color:#fff;">
+            <div style="display:flex;justify-content:space-between;"><div style="font-size:11px;letter-spacing:2px;opacity:.85;">ASSESSMENT REPORT</div><div style="font-size:10px;opacity:.8;text-align:right;">POWERED BY<br><b style="font-size:15px;">ClassMap AI</b></div></div>
+            <div style="font-size:34px;font-weight:700;margin:6px 0 22px;">${_escH(school)}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${[['SUBJECT', sub], ['CLASS', cls], ['TEST', test], ['DATE', when]].map(([a, b]) => `<div style="border:1px solid rgba(255,255,255,.35);border-radius:14px;padding:9px 14px;background:rgba(255,255,255,.08);"><div style="font-size:9px;letter-spacing:1.5px;opacity:.8;">${a}</div><div style="font-size:16px;font-weight:600;">${_escH(b)}</div></div>`).join('')}</div>
+            <div style="margin-top:18px;border-left:4px solid #a9b4ff;padding-left:12px;"><div style="font-size:9px;letter-spacing:1.5px;opacity:.8;">STUDENT</div><div style="font-size:30px;font-weight:700;">${_escH(nm.toUpperCase())}</div><div style="font-size:13px;opacity:.85;">Roll ${_escH(report.rollNumber || '')}</div></div></div>
+          <div style="margin:-48px 28px 0;background:#fff;border-radius:26px;box-shadow:0 6px 24px rgba(30,30,90,.16);padding:26px 30px;display:flex;align-items:center;gap:28px;">
+            <div style="position:relative;width:130px;height:130px;flex:none;"><svg width="130" height="130" viewBox="0 0 130 130"><circle cx="65" cy="65" r="52" fill="none" stroke="#e8ebf5" stroke-width="13"/><circle cx="65" cy="65" r="52" fill="none" stroke="${gcol}" stroke-width="13" stroke-linecap="round" stroke-dasharray="${(C * Math.min(100, pct) / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 65 65)"/></svg>
+              <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;"><div style="font-size:28px;font-weight:700;">${pct}%</div><div style="font-size:9px;color:#7f8c8d;letter-spacing:1px;">SCORE</div></div></div>
+            <div style="border-right:1px solid #e3e6f3;padding-right:26px;"><div style="font-size:10px;color:#7f8c8d;letter-spacing:1px;">MARKS</div><div style="font-size:46px;font-weight:700;line-height:1.1;">${f1(score)}<span style="font-size:18px;color:#7f8c8d;font-weight:500;"> / ${f1(dt)}</span></div><div style="display:inline-block;margin-top:8px;background:${gcol};color:#fff;border-radius:99px;padding:8px 22px;font-weight:700;">Grade ${grade}</div></div>
+            <div style="flex:1;"><div style="font-size:21px;font-weight:700;">${_escH(msg[0])}</div><div style="font-size:12.5px;color:#6b7280;margin-top:4px;">${_escH(msg[1])}</div>
+              <div style="margin-top:14px;font-size:11.5px;font-weight:600;"><span style="background:#e8f6ee;color:${green};padding:6px 12px;border-radius:99px;margin-right:6px;">● ${nFull} full marks</span><span style="background:#fff3e0;color:${amber};padding:6px 12px;border-radius:99px;margin-right:6px;">● ${nPart} partial</span><span style="background:#fdeaec;color:${red};padding:6px 12px;border-radius:99px;">● ${nZero} to work on</span></div></div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:22px 28px 0;">
+            <div style="border:1.5px solid ${green};background:#eaf7ef;border-radius:18px;padding:16px 18px;min-height:150px;"><div style="font-size:10px;letter-spacing:1.5px;font-weight:700;color:${green};margin-bottom:8px;">WHAT YOU DID WELL</div>${chips(of.strengths, 6, green)}</div>
+            <div style="border:1.5px solid ${amber};background:#fff4e2;border-radius:18px;padding:16px 18px;min-height:150px;"><div style="font-size:10px;letter-spacing:1.5px;font-weight:700;color:${amber};margin-bottom:8px;">WHERE TO IMPROVE</div>${chips(of.areasForImprovement, 6, amber)}</div></div>
+          <div style="margin:24px 28px 0;"><div style="display:flex;justify-content:space-between;align-items:center;"><div style="font-size:11px;letter-spacing:1.5px;font-weight:700;color:#1a1f6e;">MARKS BREAKDOWN</div><div style="font-size:10px;color:#6b7280;"><span style="color:${green}">●</span> Full marks &nbsp;<span style="color:${amber}">●</span> Partial &nbsp;<span style="color:${red}">●</span> No marks</div></div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:10px;">${qs.map(q => { const g = Number(q.marksAwarded) || 0, m = Number(q.maxMarksForQuestion) || 0; return `<div style="border:1.5px solid ${colOf(g, m)};background:${bgOf(g, m)};border-radius:12px;padding:8px 11px;"><div style="display:flex;justify-content:space-between;font-weight:700;font-size:13px;"><span><span style="color:${colOf(g, m)}">●</span> Q${_escH(q.questionNumber)}</span><span style="color:${colOf(g, m)}">${f1(g)}/${f1(m)}</span></div><div style="height:4px;background:rgba(255,255,255,.8);border-radius:4px;margin-top:5px;overflow:hidden;"><i style="display:block;height:100%;width:${m ? Math.min(100, g / m * 100) : 0}%;background:${colOf(g, m)};"></i></div></div>`; }).join('')}</div></div>
+          <div style="margin:26px 28px 30px;background:#1a1f6e;color:#fff;border-radius:18px;padding:20px 28px;display:flex;justify-content:space-between;align-items:center;"><div style="font-weight:700;letter-spacing:1px;font-size:12px;">TOTAL SCORE</div><div><span style="font-size:32px;font-weight:700;">${f1(score)}</span><span style="opacity:.7;"> / ${f1(dt)}</span> <b style="margin-left:12px;">${pct}%</b></div></div>`);
+        // ── answer-sheet pages: the sheet on the left, the question cards on the right ──
+        const urls: string[] = report.answerSheetImageUrls || [];
+        const pageOf = (q: any) => (Number.isInteger(q.answerPageIndex) && q.answerPageIndex >= 0) ? q.answerPageIndex : (q.answerPageIndices?.length ? q.answerPageIndices[0] : 0);
+        const byPage = new Map<number, any[]>(); qs.forEach(q => { const k = pageOf(q); if (!byPage.has(k)) byPage.set(k, []); byPage.get(k)!.push(q); });
+        const box = (label: string, text: string, bg: string, lc: string) => text ? `<div style="background:${bg};border-radius:11px;padding:9px 12px;margin-top:8px;"><div style="font-size:8.5px;letter-spacing:1.2px;font-weight:700;color:${lc};">${label}</div><div style="font-size:12.5px;line-height:1.5;white-space:pre-wrap;">${_escH(text)}</div></div>` : '';
+        const card = (q: any) => {
+            const g = Number(q.marksAwarded) || 0, m = Number(q.maxMarksForQuestion) || 0; const full = g >= m;
+            const head = `<div style="display:flex;justify-content:space-between;align-items:center;"><b style="font-size:19px;color:#1a1f6e;">Q${_escH(q.questionNumber)}</b><span style="background:${bgOf(g, m)};color:${colOf(g, m)};font-weight:700;font-size:13px;padding:4px 12px;border-radius:99px;">${f1(g)}/${f1(m)}</span></div>`;
+            const note = q.teacherNote ? box("TEACHER'S NOTE", q.teacherNote, '#fff6df', '#a8700a') : '';
+            if (full) return `<div style="border:1px solid #e3e6f3;border-radius:14px;padding:9px 14px;margin-bottom:8px;background:#fff;">${head}${note || `<div style="margin-top:4px;font-size:12px;color:${green};font-weight:600;">✓ Full marks</div>`}</div>`;
+            const why = q.whyLost || '', how = q.howToImprove || ''; const legacy = !why && !how ? String(q.finalFeedback || '') : '';
+            return `<div style="border:1px solid #e3e6f3;border-radius:14px;padding:12px 14px;margin-bottom:10px;background:#fff;page-break-inside:avoid;">${head}${note}
+              ${box('SOLUTION', clip(plain(q.answer), 420), '#efeafc', '#5b3fa0')}
+              ${(why || how) ? `<div style="background:#e8f0ff;border-radius:11px;padding:9px 12px;margin-top:8px;">${why ? `<div style="font-size:8.5px;letter-spacing:1.2px;font-weight:700;color:#2a4fb0;">WHY YOU LOST MARKS</div><div style="font-size:12.5px;line-height:1.5;margin-bottom:${how ? 6 : 0}px;">${_escH(why)}</div>` : ''}${how ? `<div style="font-size:8.5px;letter-spacing:1.2px;font-weight:700;color:#2a4fb0;">HOW TO IMPROVE</div><div style="font-size:12.5px;line-height:1.5;">${_escH(how)}</div>` : ''}</div>` : box('FEEDBACK', legacy, '#e8f0ff', '#2a4fb0')}</div>`;
+        };
+        // The storage bucket only allows the student app to read pictures into a canvas. If this origin is not allowed, lay the cards out without the picture.
+        const imgOk: boolean = urls.length ? await new Promise<boolean>(res => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => res(true); im.onerror = () => res(false); setTimeout(() => res(false), 8000); im.src = urls[0]; }) : false;
+        const sheetPages: HTMLElement[] = [];
+        for (const pg of [...byPage.keys()].sort((a, b) => a - b)) {
+            const url = urls[pg]; const list = byPage.get(pg)!;
+            sheetPages.push(mk(1123, `<div style="padding:30px 36px;background:#f5f6fb;">
+              <div style="background:#37474f;color:#fff;border-radius:12px;padding:11px 20px;display:flex;justify-content:space-between;font-size:13px;"><b>ANSWER SHEET — PAGE ${pg + 1}</b><span style="opacity:.85;">${_escH(nm.toUpperCase())} &nbsp;${_escH(report.rollNumber || '')}</span></div>
+              <div style="display:grid;grid-template-columns:${imgOk ? '520px 1fr' : '1fr'};gap:20px;margin-top:16px;align-items:start;">
+                ${imgOk ? `<div style="background:#fff;border:1px solid #e3e6f3;border-radius:14px;padding:8px;">${url ? `<img src="${_escH(url)}" crossorigin="anonymous" style="width:100%;display:block;border-radius:8px;">` : ''}</div>` : ''}
+                <div>${list.map(card).join('')}</div></div></div>`));
+        }
+        // ── learning summary ──
+        const bar = (label: string, val: string, p: number, col: string) => `<div style="display:flex;align-items:center;gap:14px;margin:9px 0;font-size:12.5px;"><div style="width:42%;font-weight:600;">${_escH(label)}</div><div style="flex:1;height:11px;background:#eef0f7;border-radius:8px;overflow:hidden;"><i style="display:block;height:100%;width:${Math.max(0, Math.min(100, p))}%;background:${col};border-radius:8px;"></i></div><div style="width:76px;text-align:right;font-weight:700;color:${col};">${_escH(val)}</div></div>`;
+        const cm: any[] = an.conceptMastery || of.conceptMastery || []; const lb: any[] = an.lostByMode || []; const tp: any[] = (report.studentIntelligence?.questionTypePerformance) || [];
+        const win = an.marksToWinBack ?? Math.max(0, dt - score);
+        const steps: any[] = Array.isArray(of.nextSteps) ? of.nextSteps : [];
+        const summary = mk(794, `<div style="padding:36px 40px;">
+            <div style="background:#37474f;color:#fff;border-radius:12px;padding:11px 20px;display:flex;justify-content:space-between;font-size:13px;"><b>YOUR LEARNING SUMMARY</b><span style="opacity:.85;">${_escH(nm.toUpperCase())} &nbsp;${_escH(report.rollNumber || '')}</span></div>
+            <div style="margin-top:18px;background:#efeafc;border:1px solid #d9d0f5;border-radius:18px;padding:18px 24px;"><span style="font-size:40px;font-weight:700;color:#5b3fa0;">${f1(win)}</span> <span style="font-size:15px;font-weight:600;">marks to win back out of ${f1(dt)}</span><div style="font-size:12px;color:#6b7280;margin-top:3px;">Answers that already earned part of the marks are the quickest to fix.</div></div>
+            ${of.summary ? `<div style="margin-top:18px;font-size:12.5px;line-height:1.6;background:#eaf7ef;border-radius:12px;padding:12px 16px;color:#17613a;">${_escH(of.summary)}</div>` : ''}
+            ${lb.length ? `<div style="margin-top:22px;font-size:12px;letter-spacing:1px;font-weight:700;color:#1a1f6e;">WHERE THE MARKS WENT <span style="font-weight:400;color:#7f8c8d;letter-spacing:0;">by kind of mistake</span></div>${lb.map(x => bar(x.label, `${f1(x.marks)} ${x.marks === 1 ? 'mark' : 'marks'}`, win ? x.marks / win * 100 : 0, red)).join('')}` : ''}
+            <div style="margin-top:22px;font-size:12px;letter-spacing:1px;font-weight:700;color:#1a1f6e;">CONCEPT MASTERY <span style="font-weight:400;color:#7f8c8d;letter-spacing:0;">weakest first</span></div>
+            ${cm.map(c => bar(c.topic, `${c.pct}%`, Number(c.pct) || 0, c.pct >= 80 ? green : c.pct >= 50 ? amber : red)).join('') || '<div style="color:#7f8c8d;font-size:12px;">—</div>'}
+            ${tp.length ? `<div style="margin-top:22px;font-size:12px;letter-spacing:1px;font-weight:700;color:#1a1f6e;">SCORE BY QUESTION TYPE</div>${tp.map((t: any) => bar(String(t.type || '').charAt(0) + String(t.type || '').slice(1).toLowerCase(), `${f1(t.scored)}/${f1(t.max)}`, t.max ? t.scored / t.max * 100 : 0, t.max && t.scored / t.max >= .8 ? green : amber)).join('')}` : ''}
+            <div style="margin-top:22px;font-size:12px;letter-spacing:1px;font-weight:700;color:#1a1f6e;">YOUR NEXT STEPS</div>
+            ${steps.map((t, i) => `<div style="display:flex;gap:12px;align-items:center;border:1px solid #e3e6f3;border-radius:99px;padding:9px 16px;margin:8px 0;font-size:12.5px;"><span style="width:24px;height:24px;border-radius:50%;background:#e1f4e8;color:${green};font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">${i + 1}</span>${_escH(typeof t === 'string' ? t : t?.text || '')}</div>`).join('') || '<div style="color:#7f8c8d;font-size:12px;">—</div>'}
+            <div style="margin-top:20px;font-size:10px;color:#95a5a6;">Confidential — for student and parent use only · ClassMap AI · ${_escH(when)}</div></div>`);
+        // wait for every sheet image
+        await Promise.all(sheetPages.flatMap(pg => Array.from(pg.querySelectorAll('img')).map(img => (img as HTMLImageElement).complete ? Promise.resolve() : new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); }))));
         await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r));
-        const canvas = await html2canvas(wrap, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, windowWidth: 794 });
-        wrap.remove();
-        const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
-        const pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight();
-        const imgH = pageW * (canvas.height / canvas.width); const img = canvas.toDataURL('image/jpeg', 0.88);
-        for (let y = 0; y < imgH; y += pageH) { if (y > 0) pdf.addPage(); pdf.addImage(img, 'JPEG', 0, -y, pageW, imgH, undefined, 'FAST'); }
-        pdf.save(`${(report.studentName || 'student').replace(/[^\w]+/g, '_')}_${(ctx.assessmentTitle || 'exam').replace(/[^\w]+/g, '_')}_analysis.pdf`);
+        const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' }); let isFirstPage = true;
+        const addEl = async (el: HTMLElement, landscape: boolean, w: number) => {
+            const canvas = await html2canvas(el, { scale: 1.6, useCORS: true, backgroundColor: '#ffffff', logging: false, windowWidth: w });
+            if (!canvas.width || !canvas.height) return;
+            if (!isFirstPage) pdf.addPage('a4', landscape ? 'l' : 'p'); else if (landscape) { pdf.deletePage(1); pdf.addPage('a4', 'l'); } isFirstPage = false;
+            const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight(); const ih = pw * canvas.height / canvas.width; const img = canvas.toDataURL('image/jpeg', 0.88);
+            for (let y = 0; y < ih - 0.5; y += ph) { if (y > 0) pdf.addPage('a4', landscape ? 'l' : 'p'); pdf.addImage(img, 'JPEG', 0, -y, pw, ih, undefined, 'FAST'); }
+        };
+        await addEl(p1, false, 794);
+        for (const sp of sheetPages) await addEl(sp, true, 1123);
+        await addEl(summary, false, 794);
+        pdf.save(`${(nm || 'student').replace(/[^\w]+/g, '_')}_${(test || 'exam').replace(/[^\w]+/g, '_')}_analysis.pdf`);
     } catch (e) { console.error('[osm analysis pdf]', e); showFeedbackMessage('Could not create the analysis PDF.', 'error'); }
-    finally { toggleLoading(false); }
+    finally { made.forEach(d => d.remove()); toggleLoading(false); }
 }
 window.osmDownloadAnalysisPdf = async (reportIndex: number) => { const r = assessmentReports[reportIndex]; if (!r) return; await osmAnalysisPdf(r, currentAssessmentForReportView || currentAssessmentToGrade || {}); };
 

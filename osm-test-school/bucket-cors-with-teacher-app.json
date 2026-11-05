@@ -1,0 +1,24 @@
+[
+ {
+  "origin": [
+   "https://classmap-students.web.app"
+  ],
+  "method": [
+   "GET",
+   "HEAD"
+  ],
+  "maxAgeSeconds": 3600
+ },
+ {
+  "origin": [
+   "https://teachers-classmap.web.app",
+   "https://teachersclassmap.web.app",
+   "https://teachers-classmap--osm-preview-bmtx1m47.web.app"
+  ],
+  "method": [
+   "GET",
+   "HEAD"
+  ],
+  "maxAgeSeconds": 3600
+ }
+]

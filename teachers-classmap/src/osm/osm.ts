@@ -287,9 +287,6 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
               <button class="osm-btn" id="osm-assign" title="Pick which questions you will mark, if co-teachers split the paper">My questions${myAssign.length ? ` (${myAssign.length})` : ''}</button>
             </div>
           </div>
-          <div class="osm-steps"><span class="${readyN || analysedN ? 'done' : 'cur'}">① Teachers give marks</span><i>→</i><span class="${analysedN ? 'done' : readyN ? 'cur' : ''}">② Claude analyses</span><i>→</i><span class="${publishedN ? 'done' : analysedN ? 'cur' : ''}">③ Publish</span></div>
-          ${readyN ? `<div class="osm-banner ok">✔ ${readyN} paper${readyN > 1 ? 's are' : ' is'} marked by every teacher — <b>ready for analysis</b>. Tell Claude: “Analyse Class ${esc(paper.className)}${esc(paper.section)} ${esc(paper.subject)}”.</div>` : ''}
-          ${toPublish.length ? `<div class="osm-banner info">💬 ${toPublish.length} analysed — open <b>Feedback</b> to read or edit it, then <b>Publish</b>.</div>` : ''}
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc, parent }) => `<tr>
             <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
@@ -297,7 +294,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             <td>${d?.pages?.length ? `<b>${fmt1(parent?.overallScore ?? sc.total)}</b> / ${declaredTotal(paper) || '—'}` : '—'}</td>
             <td>${teachers.map(t => `<span class="osm-chip ${st.doneBy.includes(t.uid) ? 'on' : ''}" title="${esc(t.name)}">${esc(shortName(t.name, teachers))}${st.doneBy.includes(t.uid) ? ' ✓' : ''}</span>`).join('')}</td>
             <td><span class="osm-badge ${st.code}">${esc(st.label)}</span></td>
-            <td class="osm-act">${d?.pages?.length ? `<button class="osm-btn small ${parent ? '' : 'primary'} osm-open" data-uid="${esc(s.uid)}">Mark</button>` : ''}${parent ? `<button class="osm-btn small primary osm-fbbtn" data-uid="${esc(s.uid)}">Feedback</button>${parent.published ? `<button class="osm-link osm-unpub" data-uid="${esc(s.uid)}">Unpublish</button>` : `<button class="osm-btn small osm-pub" data-uid="${esc(s.uid)}">Publish</button>`}` : ''}</td>
+            <td class="osm-act">${d?.pages?.length ? `<button class="osm-btn primary osm-markbtn osm-open" data-uid="${esc(s.uid)}">Mark</button>` : ''}${parent ? `<button class="osm-btn small osm-fbbtn" data-uid="${esc(s.uid)}">Feedback</button>${parent.published ? `<button class="osm-link osm-unpub" data-uid="${esc(s.uid)}">Unpublish</button>` : `<button class="osm-btn small osm-pub" data-uid="${esc(s.uid)}">Publish</button>`}` : ''}</td>
           </tr>`).join('')}
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
@@ -686,40 +683,78 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     function wireTabs() {
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-tabs button').forEach(b => b.addEventListener('click', async () => { await flushMarks(); await flushFb(); view = b.dataset.view as any; renderSide(); }));
     }
+    // a question's feedback has three parts; reports written before this change only have the combined text
+    function fbParts(qr: any) {
+        let why = qr.whyLost, how = qr.howToImprove, note = qr.teacherNote;
+        if (why === undefined && how === undefined) {
+            const t = String(qr.finalFeedback || ''); const mm = t.match(/Where marks were lost:\s*([\s\S]*?)(?:\n\nHow to improve:|$)/); const hh = t.match(/How to improve:\s*([\s\S]*)$/); const nn = t.match(/^Teacher's note:\s*([\s\S]*?)(?:\n\n|$)/);
+            note = nn ? nn[1] : ''; why = mm ? mm[1].trim() : (t && !nn ? t : ''); how = hh ? hh[1].trim() : '';
+        }
+        return { why: why || '', how: how || '', note: note || '' };
+    }
+    function composeFb(qr: any, why: string, how: string, note: string) {
+        qr.whyLost = why; qr.howToImprove = how; qr.teacherNote = note;
+        qr.finalFeedback = [note ? `Teacher's note: ${note}` : '', qr.headline || '', why ? `Where marks were lost: ${why}` : '', how ? `How to improve: ${how}` : ''].filter(Boolean).join('\n\n');
+        const t = [note ? `Teacher's note: ${note}` : '', why, how].filter(Boolean).join(' ').trim();   // the student's marker note beside the sheet carries the same text
+        if (t) { if (qr.stepWiseEvaluation?.length) qr.stepWiseEvaluation[0].comment = t; else qr.stepWiseEvaluation = [{ pageIndex: (qr.answerPageIndex >= 0 ? qr.answerPageIndex + 1 : 1), stepPoint: [], marks: qr.marksAwarded || 0, comment: t }]; } else qr.stepWiseEvaluation = [];
+    }
+    const plainKey = (t: any) => String(t ?? '').replace(/\\\(|\\\)|\\\[|\\\]/g, '').replace(/\\text\{([^}]*)\}/g, '$1').replace(/\\d?frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)').replace(/\\times/g, '×').replace(/\\([a-zA-Z]+)/g, '$1').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
+    const rbox = (cls: string, label: string, text: string) => text ? `<div class="osm-rbox ${cls}"><div class="osm-rlab">${label}</div><div>${esc(text).replace(/\n/g, '<br>')}</div></div>` : '';
+    function fbView(qr: any) {
+        const { why, how, note } = fbParts(qr); const full = (Number(qr.marksAwarded) || 0) >= (Number(qr.maxMarksForQuestion) || 0);
+        const wh = (why || how) ? `<div class="osm-rbox blue">${why ? `<div class="osm-rlab">WHY YOU LOST MARKS</div><div>${esc(why).replace(/\n/g, '<br>')}</div>` : ''}${how ? `<div class="osm-rlab" style="margin-top:${why ? 7 : 0}px">HOW TO IMPROVE</div><div>${esc(how).replace(/\n/g, '<br>')}</div>` : ''}</div>` : '';
+        return rbox('amber', "TEACHER'S NOTE", note) + wh + ((!note && !why && !how && !full) ? '<div class="osm-muted" style="font-size:.8rem">No feedback written yet.</div>' : '');
+    }
     function fbCard(qr: any, i: number) {
-        const q = paper.questions[i] || {}; const loser = !!qr._runtimeOrLoser; const max = qMax(q); const got = Number(qr.marksAwarded) || 0; const txt = String(qr.finalFeedback || '');
-        return `<div class="osm-fq ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${loser ? '#b8c0d0' : markColor(got)}">
-          <div class="osm-fq-head"><span class="osm-qn">Q${esc(qr.questionNumber)}</span>${loser ? '<span class="osm-tag">alternative · not counted</span>' : ''}
-            <span class="osm-fq-marks">${loser ? '' : `<input class="osm-fbmark" data-i="${i}" value="${fmt1(got)}" inputmode="decimal"> / ${fmt1(max)}`}</span></div>
-          ${loser ? '' : `<div class="osm-fbtext" data-i="${i}">${txt ? esc(txt).replace(/\n/g, '<br>') : '<span class="osm-muted">No feedback needed (full marks)</span>'}</div>
-            <textarea class="osm-fbta" data-i="${i}" rows="5" style="display:none">${esc(txt)}</textarea>
-            <button class="osm-link osm-fbedit" data-i="${i}">${txt ? '✎ Edit feedback' : '＋ Add feedback'}</button>`}
+        const q = paper.questions[i] || {}; const loser = !!qr._runtimeOrLoser; const max = qMax(q); const got = Number(qr.marksAwarded) || 0; const { why, how, note } = fbParts(qr);
+        const tone = loser ? 'gray' : got >= max ? 'full' : got > 0 ? 'part' : 'zero';
+        const compact = tone === 'full' && !note && !why && !how;
+        return `<div class="osm-rq ${tone}${compact ? ' compact' : ''}" data-i="${i}">
+          <div class="osm-rq-h"><span class="osm-rq-n">Q${esc(qr.questionNumber)}</span>${compact ? '<span class="osm-ok">✓ Full marks</span>' : ''}${loser ? '<span class="osm-tag">alternative · not counted</span>' : ''}${loser ? '' : `<span class="osm-rq-chip"><input class="osm-fbmark" data-i="${i}" value="${fmt1(got)}" inputmode="decimal"> / ${fmt1(max)}</span>`}</div>
+          ${loser ? '' : `<div class="osm-rq-view" data-i="${i}">${fbView(qr)}</div>
+            <div class="osm-rq-edit" data-i="${i}" style="display:none">
+              <label>Teacher's note <small>(optional)</small></label><textarea class="osm-fbta" data-f="note" data-i="${i}" rows="2">${esc(note)}</textarea>
+              <label>Why marks were lost</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
+              <label>How to improve</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
+            <div class="osm-rq-foot"><button class="osm-link osm-fbedit" data-i="${i}">${(why || how || note) ? '✎ Edit feedback' : '＋ Add feedback'}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div>${esc(plainKey(q.answer))}</div></details>` : ''}</div>`}
         </div>`;
     }
+    function ovView(k: string, text: string) {
+        const items = text.split('\n').map(x => x.trim()).filter(Boolean);
+        if (!items.length) return '<span class="osm-muted">—</span>';
+        if (k === 'summary') return esc(text).replace(/\n/g, '<br>');
+        if (k === 'steps') return items.map((t, n) => `<div class="osm-step"><b>${n + 1}</b>${esc(t)}</div>`).join('');
+        return items.map(t => `<span class="osm-pill ${k === 'strengths' ? 'g' : 'a'}">${esc(t.replace(/^\[([^\]]+)\].*$/, '$1'))}</span>`).join('');
+    }
     function ovBlock(k: string, label: string, text: string, list: boolean) {
-        const view_ = !text.trim() ? '<span class="osm-muted">—</span>' : list ? `<ul>${text.split('\n').filter(Boolean).map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : esc(text).replace(/\n/g, '<br>');
-        return `<div class="osm-ovb"><div class="osm-ovh"><b>${label}</b><button class="osm-link osm-ovedit" data-k="${k}">✎ Edit</button></div><div class="osm-ovtext" data-k="${k}">${view_}</div><textarea class="osm-ovta" data-k="${k}" rows="${list ? 6 : 4}" style="display:none">${esc(text)}</textarea></div>`;
+        return `<div class="osm-ovb"><div class="osm-ovh"><b>${label}</b><button class="osm-link osm-ovedit" data-k="${k}">✎ Edit</button></div><div class="osm-ovtext" data-k="${k}">${ovView(k, text)}</div><textarea class="osm-ovta" data-k="${k}" rows="${list ? 6 : 4}" style="display:none">${esc(text)}</textarea></div>`;
+    }
+    function bars(rows: { label: string; val: string; pct: number; col: string }[]) {
+        return `<div class="osm-bars">${rows.map(r => `<div class="osm-bar2"><span class="osm-bl">${esc(r.label)}</span><span class="osm-bt"><i style="width:${Math.max(0, Math.min(100, r.pct))}%;background:${r.col}"></i></span><b style="color:${r.col}">${esc(r.val)}</b></div>`).join('')}</div>`;
     }
     function renderFb() {
         if (!fbReport || !fbParent) return;
         const prev = (sideEl.querySelector('#osm-fbs') as HTMLElement | null)?.scrollTop ?? 0;
-        const dt = declaredTotal(paper); const pub = !!fbParent.published; const of = fbParent.overallFeedback || {}; const an = fbParent.analysis || {};
-        const cm: any[] = of.conceptMastery || an.conceptMastery || []; const flags: any[] = an.flags || [];
-        const lc: Record<string, string> = { 'Strong': '#1e9e5a', 'Good': '#2575fc', 'Developing': '#e08a00', 'Needs work': '#e74c3c' };
+        const dt = declaredTotal(paper); const score = Number(fbParent.overallScore) || 0; const pctv = dt ? Math.round(score / dt * 100) : 0; const pub = !!fbParent.published;
+        const of = fbParent.overallFeedback || {}; const an = fbParent.analysis || {};
+        const cm: any[] = of.conceptMastery || an.conceptMastery || []; const flags: any[] = an.flags || []; const lb: any[] = an.lostByMode || [];
+        const win = an.marksToWinBack ?? Math.max(0, dt - score); const gr = pctv >= 90 ? 'A+' : pctv >= 80 ? 'A' : pctv >= 70 ? 'B+' : pctv >= 60 ? 'B' : pctv >= 50 ? 'C' : 'D';
+        const col = (p: number) => p >= 80 ? '#1e8e4e' : p >= 50 ? '#d17a0a' : '#d12f3a';
         sideEl.innerHTML = `${tabsHtml()}
-          <div class="osm-score"><div class="osm-score-top"><div class="osm-score-num">${fmt1(fbParent.overallScore || 0)}<small> / ${dt || '—'}</small></div><div class="osm-sub"><span id="osm-save" class="osm-save"></span></div></div>
-            <div class="osm-pubrow"><span class="osm-badge ${pub ? 'published' : 'analysed'}">${pub ? 'Published' : 'Analysed · ready to publish'}</span>
-              <button class="osm-btn small primary" id="fb-publish">${pub ? 'Re-publish' : 'Publish'}</button>${pub ? '<button class="osm-btn small" id="fb-unpublish">Unpublish</button>' : ''}<button class="osm-btn small" id="fb-pdf">📄 Analysis PDF</button></div>
-            ${pub ? '<div class="osm-sub" style="margin-top:6px">Edits are saved here. Click Re-publish to update the student’s copy.</div>' : ''}</div>
+          <div class="osm-fbhead"><div class="osm-fbscore"><span class="osm-fbbig">${fmt1(score)}</span><span class="osm-fbof"> / ${dt || '—'}</span><span class="osm-grade" style="background:${col(pctv)}">${pctv}% · Grade ${gr}</span></div>
+            <div class="osm-pubrow"><span class="osm-badge ${pub ? 'published' : 'analysed'}">${pub ? 'Published' : 'Analysed · ready to publish'}</span><span id="osm-save" class="osm-save"></span></div>
+            <div class="osm-pubrow"><button class="osm-btn small primary" id="fb-publish">${pub ? 'Re-publish' : 'Publish'}</button>${pub ? '<button class="osm-btn small" id="fb-unpublish">Unpublish</button>' : ''}<button class="osm-btn small" id="fb-pdf">📄 Analysis PDF</button></div>
+            ${pub ? '<div class="osm-sub">Edits are saved here. Click Re-publish to update the student’s copy.</div>' : ''}</div>
           <div class="osm-fbscroll" id="osm-fbs">
             ${fbReport.map((qr, i) => fbCard(qr, i)).join('')}
-            <div class="osm-ov"><h4>Overall analysis</h4>
+            <div class="osm-ov"><div class="osm-ovtitle">YOUR LEARNING SUMMARY</div>
+              <div class="osm-win"><b>${fmt1(win)}</b> marks to win back out of ${dt || '—'}</div>
               ${ovBlock('summary', 'Summary', of.summary || '', false)}
-              <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted" style="font-size:.72rem">worked out from the marks</span></div>
-                <table class="osm-cmt"><tbody>${cm.map(c => `<tr><td>${esc(c.topic)}</td><td style="text-align:right">${esc(c.scored)}/${esc(c.max)}</td><td style="width:34%"><div class="osm-cmbar"><i style="width:${Math.max(0, Math.min(100, Number(c.pct) || 0))}%;background:${lc[c.level] || '#7f8c8d'}"></i></div></td><td><span class="osm-cmlv" style="background:${lc[c.level] || '#7f8c8d'}">${esc(c.level)} ${esc(c.pct)}%</span></td></tr>`).join('') || '<tr><td>—</td></tr>'}</tbody></table></div>
-              ${ovBlock('strengths', 'Strengths', linesOf(of.strengths), true)}
-              ${ovBlock('areas', 'Weaknesses / areas to improve', linesOf(of.areasForImprovement), true)}
-              ${ovBlock('steps', 'Next steps', linesOf(of.nextSteps), true)}
+              ${lb.length ? `<div class="osm-ovb"><div class="osm-ovh"><b>Where the marks went</b><span class="osm-muted" style="font-size:.72rem">by kind of mistake</span></div>${bars(lb.map(x => ({ label: x.label, val: `${fmt1(x.marks)} ${x.marks === 1 ? 'mark' : 'marks'}`, pct: win ? x.marks / win * 100 : 0, col: '#d12f3a' })))}</div>` : ''}
+              <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted" style="font-size:.72rem">weakest first · worked out from the marks</span></div>${bars(cm.map(c => ({ label: c.topic, val: `${c.pct}%`, pct: Number(c.pct) || 0, col: col(Number(c.pct) || 0) })))}</div>
+              ${ovBlock('strengths', 'What you did well', linesOf(of.strengths), true)}
+              ${ovBlock('areas', 'Where to improve', linesOf(of.areasForImprovement), true)}
+              ${ovBlock('steps', 'Your next steps', linesOf(of.nextSteps), true)}
               ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this):</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}
             </div>
           </div>
@@ -728,18 +763,15 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         wireTabs();
         sideEl.querySelector('#osm-prev')?.addEventListener('click', async () => { await flushFb(); pos > 0 && openDesk(roster, paper, teachers, order[pos - 1], order, view); });
         sideEl.querySelector('#osm-next')?.addEventListener('click', async () => { await flushFb(); pos < order.length - 1 && openDesk(roster, paper, teachers, order[pos + 1], order, view); });
-        // per-question feedback: click Edit, type, it saves by itself
+        // per-question feedback: ✎ Edit opens the three boxes; typing saves by itself
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-fbedit').forEach(b => b.addEventListener('click', () => {
-            const i = Number(b.dataset.i); const ta = sideEl.querySelector(`.osm-fbta[data-i="${i}"]`) as HTMLTextAreaElement; const tx = sideEl.querySelector(`.osm-fbtext[data-i="${i}"]`) as HTMLElement;
-            const open = ta.style.display === 'none';
-            if (open) { ta.style.display = 'block'; tx.style.display = 'none'; b.textContent = '✔ Done'; ta.focus(); }
-            else { ta.style.display = 'none'; tx.style.display = 'block'; const t = ta.value.trim(); tx.innerHTML = t ? esc(ta.value).replace(/\n/g, '<br>') : '<span class="osm-muted">No feedback needed (full marks)</span>'; b.textContent = t ? '✎ Edit feedback' : '＋ Add feedback'; }
+            const i = Number(b.dataset.i); const ed = sideEl.querySelector(`.osm-rq-edit[data-i="${i}"]`) as HTMLElement; const vw = sideEl.querySelector(`.osm-rq-view[data-i="${i}"]`) as HTMLElement;
+            if (ed.style.display === 'none') { ed.style.display = 'block'; vw.style.display = 'none'; b.textContent = '✔ Done'; (ed.querySelector('textarea[data-f="why"]') as HTMLTextAreaElement).focus(); }
+            else { const p = fbParts(fbReport![i]); if (!(p.why || p.how || p.note)) { renderFb(); return; } ed.style.display = 'none'; vw.style.display = 'block'; vw.innerHTML = fbView(fbReport![i]); b.textContent = '✎ Edit feedback'; }
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-fbta').forEach(ta => ta.addEventListener('input', () => {
-            const i = Number(ta.dataset.i); const qr = fbReport![i]; const t = ta.value.trim(); qr.finalFeedback = ta.value;
-            // the student's "marker note" next to the answer sheet carries the same text
-            if (t) { if (qr.stepWiseEvaluation?.length) qr.stepWiseEvaluation[0].comment = t; else qr.stepWiseEvaluation = [{ pageIndex: (qr.answerPageIndex >= 0 ? qr.answerPageIndex + 1 : 1), stepPoint: [], marks: qr.marksAwarded || 0, comment: t }]; } else qr.stepWiseEvaluation = [];
-            queueReportSave();
+            const i = Number(ta.dataset.i); const ed = sideEl.querySelector(`.osm-rq-edit[data-i="${i}"]`)!; const g = (f: string) => (ed.querySelector(`textarea[data-f="${f}"]`) as HTMLTextAreaElement).value.trim();
+            composeFb(fbReport![i], g('why'), g('how'), g('note')); queueReportSave();
         }));
         sideEl.querySelectorAll<HTMLInputElement>('.osm-fbmark').forEach(inp => {
             inp.addEventListener('focus', () => inp.select());
@@ -751,11 +783,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                 applyMarkToReport(i, v); renderFb();
             });
         });
-        // overall analysis: summary, strengths, weaknesses, next steps
+        // overall analysis blocks
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-ovedit').forEach(b => b.addEventListener('click', () => {
             const k = b.dataset.k!; const ta = sideEl.querySelector(`.osm-ovta[data-k="${k}"]`) as HTMLTextAreaElement; const tx = sideEl.querySelector(`.osm-ovtext[data-k="${k}"]`) as HTMLElement;
             if (ta.style.display === 'none') { ta.style.display = 'block'; tx.style.display = 'none'; b.textContent = '✔ Done'; ta.focus(); }
-            else { ta.style.display = 'none'; tx.style.display = 'block'; b.textContent = '✎ Edit'; const t = ta.value; tx.innerHTML = !t.trim() ? '<span class="osm-muted">—</span>' : k === 'summary' ? esc(t).replace(/\n/g, '<br>') : `<ul>${t.split('\n').filter(x => x.trim()).map(l => `<li>${esc(l)}</li>`).join('')}</ul>`; }
+            else { ta.style.display = 'none'; tx.style.display = 'block'; b.textContent = '✎ Edit'; tx.innerHTML = ovView(k, ta.value); }
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-ovta').forEach(ta => ta.addEventListener('input', () => {
             const k = ta.dataset.k!; const split = (t: string) => t.split('\n').map(x => x.trim()).filter(Boolean); const o = (fbParent.overallFeedback ||= {});
@@ -1045,7 +1077,20 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-pubrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px}
 .osm-badge.analysed{background:#dbe8ff;color:#2575fc}.osm-badge.published{background:#d9f3e6;color:var(--osm-ok)}
 .osm-banner.info{background:#e8f0ff;color:#2575fc}.osm-act{white-space:nowrap}.osm-act .osm-btn,.osm-act .osm-link{margin-right:5px}
+.osm-markbtn{padding:10px 26px;font-size:1rem;font-weight:600;border-radius:12px;min-width:96px;justify-content:center}.osm-act{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.osm-fbhead{padding:10px 14px 8px;border-bottom:1px solid var(--osm-line)}.osm-fbscore{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}.osm-fbbig{font-size:1.9rem;font-weight:700;line-height:1.1;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent}.osm-fbof{font-size:.9rem;color:var(--osm-muted)}.osm-grade{margin-left:auto;color:#fff;font-size:.74rem;font-weight:700;padding:3px 11px;border-radius:99px}
 .osm-fbscroll{flex:1;overflow:auto;padding:8px 10px 14px}
+.osm-rq{border:1px solid var(--osm-line);border-radius:14px;padding:9px 12px;margin:8px 0;background:var(--osm-card);border-left:5px solid #b8c0d0}.osm-rq.full{border-left-color:#1e8e4e}.osm-rq.part{border-left-color:#d17a0a}.osm-rq.zero{border-left-color:#d12f3a}.osm-rq.gray{opacity:.6}
+.osm-rq-h{display:flex;align-items:center;gap:8px}.osm-rq-n{font-size:1.05rem;font-weight:700;color:#1a1f6e}.osm-rq-chip{margin-left:auto;font-size:.82rem;color:var(--osm-muted)}
+.osm-rq.full .osm-fbmark{color:#1e8e4e;background:#e8f6ee;border-color:#b8e0cb}.osm-rq.part .osm-fbmark{color:#d17a0a;background:#fff3e0;border-color:#f3d9a4}.osm-rq.zero .osm-fbmark{color:#d12f3a;background:#fdeaec;border-color:#f2b9bf}
+.osm-rbox{border-radius:10px;padding:8px 11px;margin-top:8px;font-size:.82rem;line-height:1.5}.osm-rbox.blue{background:#e8f0ff}.osm-rbox.amber{background:#fff6df}.osm-rlab{font-size:.62rem;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;margin-bottom:2px}.osm-rbox.amber .osm-rlab{color:#a8700a}
+.osm-ok{font-size:.78rem;font-weight:600;color:#1e8e4e}.osm-rq.compact{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 12px}.osm-rq.compact .osm-rq-h{flex:1}.osm-rq.compact .osm-rq-foot{margin:0}.osm-rq.compact .osm-sol,.osm-rq.compact .osm-rq-view{display:none}.osm-rq.compact .osm-rq-edit{flex-basis:100%}
+.osm-rq-edit label{display:block;font-size:.72rem;font-weight:600;margin:8px 0 3px;color:var(--osm-fg)}.osm-rq-edit small{font-weight:400;color:var(--osm-muted)}
+.osm-rq-foot{display:flex;align-items:center;gap:12px;margin-top:6px;flex-wrap:wrap}.osm-sol{font-size:.76rem;color:var(--osm-muted)}.osm-sol summary{cursor:pointer}.osm-sol div{margin-top:4px;padding:7px 10px;background:#efeafc;color:#34286a;border-radius:9px;line-height:1.45}
+.osm-ovtitle{font-size:.72rem;letter-spacing:1.4px;font-weight:700;color:#1a1f6e;margin-bottom:8px}.osm-win{background:#efeafc;border:1px solid #d9d0f5;border-radius:14px;padding:12px 16px;font-size:.9rem;margin-bottom:10px}.osm-win b{font-size:1.9rem;color:#5b3fa0;margin-right:6px}
+.osm-bars{margin-top:4px}.osm-bar2{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:.78rem}.osm-bl{width:40%;font-weight:600;line-height:1.25}.osm-bt{flex:1;height:9px;background:var(--osm-line);border-radius:8px;overflow:hidden}.osm-bt i{display:block;height:100%;border-radius:8px}.osm-bar2 b{width:62px;text-align:right}
+.osm-pill{display:inline-block;margin:3px 5px 3px 0;padding:5px 11px;border-radius:99px;font-size:.76rem;font-weight:600;border:1.5px solid}.osm-pill.g{background:#eaf7ef;border-color:#1e8e4e;color:#17613a}.osm-pill.a{background:#fff4e2;border-color:#d17a0a;color:#8a4f00}
+.osm-step{display:flex;gap:10px;align-items:center;border:1px solid var(--osm-line);border-radius:99px;padding:7px 14px;margin:6px 0;font-size:.8rem}.osm-step b{width:22px;height:22px;border-radius:50%;background:#e1f4e8;color:#1e8e4e;display:flex;align-items:center;justify-content:center;flex:none;font-size:.74rem}
 .osm-fq{border:1px solid var(--osm-line);border-left:4px solid var(--c,#b8c0d0);border-radius:10px;padding:7px 10px;margin:6px 0;background:var(--osm-card)}.osm-fq.loser{opacity:.6}
 .osm-fq-head{display:flex;align-items:center;gap:8px}.osm-fq-marks{margin-left:auto;font-size:.82rem;color:var(--osm-muted)}
 #osm-root .osm-fbmark{width:52px;text-align:center;font-weight:700;border:1.5px solid var(--c);border-radius:8px;padding:2px;font-family:inherit;background:var(--osm-bg);color:var(--osm-fg)}
