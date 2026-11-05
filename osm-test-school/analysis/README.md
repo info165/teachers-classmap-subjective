@@ -27,3 +27,5 @@ Each lost-mark question needs `failureMode`: NEVER_KNEW (no idea / blank), KNEW_
 - PAPER CHECK: an "Alternative Question (OR) with Question X" must be reciprocated by X, otherwise finalize refuses.
 - Read the actual answer-sheet pages (not only OCR text) for every lost-mark question; a second reviewer then checks review-packet.md against key + marks.
 - Marks Given = verification: all roster teachers are recorded as verified so teacher/admin Publish works straight away; teachers can edit the analysis (autosaved) first.
+
+- Teachers can add an optional reason on any question in the marking desk (✎). It is exported as `students[].teacherNotes` and shown to the student verbatim as "Teacher's note: …". Your whyWrong must agree with it. The declared paper total is always the total: never compare it with the sum of question marks.

@@ -47,6 +47,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
    if(f.questionType&&!TYPES.includes(f.questionType)) warnings.push(`${tag}: unknown questionType ${f.questionType}, using CONCEPTUAL`);
    if(counted&&!f.unattempted&&!(Number.isInteger(f.page)&&f.page>=1&&f.page<=nPages)) {problems.push(`${tag}: page (1-${nPages}) where the answer is written is required`); bad=true;}
    let finalFeedback='', failureMode='', steps=[];
+   const tnote=counted?String(((s.teacherNotes||{})[qn]||{}).text||'').trim():'';
    if(f.teacherFlag){ flags.push({q:qn,text:f.teacherFlag}); warnings.push(`${tag}: FOR THE TEACHER - ${f.teacherFlag}`); }
    if(lost){
      const unatt=!!f.unattempted;
@@ -62,10 +63,11 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      const st=(q.markingSteps||[]).map(x=>Number(x.marks)).filter(x=>!isNaN(x));
      if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match the rubric (teacher's mark is kept; worth a look)`);
      failureMode=f.failureMode||'';
-     finalFeedback=[unatt?'Not attempted.':(f.headline||'').trim(), `Where marks were lost: ${(f.whyWrong||'').trim()}`, `How to improve: ${(f.howToImprove||'').trim()}`].filter(Boolean).join('\n\n');
-     if(f.page) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:unatt,comment:`${(f.whyWrong||'').trim()} ${(f.howToImprove||'').trim()}`.trim()}];
+     finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), `Where marks were lost: ${(f.whyWrong||'').trim()}`, `How to improve: ${(f.howToImprove||'').trim()}`].filter(Boolean).join('\n\n');
+     if(f.page) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:unatt,comment:`${tnote?`Teacher's note: ${tnote} `:''}${(f.whyWrong||'').trim()} ${(f.howToImprove||'').trim()}`.trim()}];
    } else {
      // full marks, or an OR alternative that is not counted: NO feedback is written
+     if(counted&&tnote){ finalFeedback=`Teacher's note: ${tnote}`; if(Number.isInteger(f.page)) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:false,comment:`Teacher's note: ${tnote}`}]; }
      if(f.whyWrong||f.howToImprove||f.headline||f.feedback) warnings.push(`${tag}: ${loser?'uncounted alternative':'full marks'} - the feedback you wrote is ignored (none is shown)`);
      if(loser) finalFeedback='Not attempted';
    }
@@ -82,7 +84,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   if(reports.some(r=>r._runtimeOrLoser!==losersPre.has(r.questionNumber))) warnings.push(`${R}: OR losers recomputed differently from the export - check`);
   const counted=reports.filter(r=>!r._runtimeOrLoser);
   const total=counted.reduce((a,r)=>a+r.marksAwarded,0);
-  { const cmax=counted.reduce((a,r)=>a+r.maxMarksForQuestion,0); if(P.declaredTotal&&Math.abs(cmax-P.declaredTotal)>1e-9) warnings.push(`${R}: counted questions add up to ${fmtN(cmax)} marks but the paper total is ${fmtN(P.declaredTotal)} - check OR pairs / marks in the question paper (percentages use the declared total)`); }
+  // NOTE: the declared paper total is ALWAYS the total. Alternative (OR) questions both carry marks, so the sum of question marks is never compared with it.
   if(Math.abs(total-s.total)>1e-9) problems.push(`${R}: recomputed total ${total} != exported total ${s.total}`);
   // ---- concept mastery: computed from the teachers' marks only (uncounted alternatives excluded) ----
   const byTopic={}; counted.forEach(r=>{const t=r.topic; (byTopic[t]??={topic:t,scored:0,max:0,qs:[]}); byTopic[t].scored+=r.marksAwarded; byTopic[t].max+=r.maxMarksForQuestion; byTopic[t].qs.push(r.questionNumber);});
