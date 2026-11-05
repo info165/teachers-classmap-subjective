@@ -30,7 +30,7 @@ export interface OsmBridge {
     typeset: (el: HTMLElement) => Promise<void> | void;
     orLosers: (reports: any[], questions: any[]) => Set<string>;
     backToClass: () => void;
-    analysisPdf: (report: any, ctx: any) => Promise<void>;
+    analysisPdf: (report: any, ctx: any, onProgress?: (t: string) => void) => Promise<void>;
 }
 
 let B: OsmBridge;
@@ -805,7 +805,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         });
         sideEl.querySelector('#fb-pdf')?.addEventListener('click', async () => {
             await flushFb(); busy(true, 'Preparing PDF…');
-            try { await B.analysisPdf({ ...fbParent, questionWiseReport: fbReport, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' }, { assessmentTitle: paper.title, className: paper.className, section: paper.section, subject: paper.subject }); }
+            try { await B.analysisPdf({ ...fbParent, questionWiseReport: fbReport, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' }, { assessmentTitle: paper.title, className: paper.className, section: paper.section, subject: paper.subject }, (t: string) => busy(true, t)); }
             catch (e: any) { toast('Could not create the PDF: ' + e.message, 'error'); } finally { busy(false); }
         });
     }

@@ -24613,8 +24613,9 @@ window.osmAnalysisEdit = (reportIndex: number) => {
         } catch (e) { console.error('[osm analysis] save failed', e); if (st) { st.textContent = '⚠ Not saved — check connection'; st.style.color = '#e74c3c'; } }
     }, 900);
 };
-async function osmAnalysisPdf(report: any, ctx: any) {
+async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) => void) {
     if (!report) return;
+    const say = (t: string) => { try { onProgress?.(t); } catch { /* */ } toggleLoading(true, t); };
     const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => { if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; } const sc = document.createElement('script'); sc.src = src; sc.onload = () => resolve(); sc.onerror = () => reject(); document.head.appendChild(sc); });
     toggleLoading(true, 'Preparing the PDF…');
     const made: HTMLElement[] = [];
@@ -24675,15 +24676,29 @@ async function osmAnalysisPdf(report: any, ctx: any) {
               ${box('SOLUTION', clip(plain(q.answer), 420), '#efeafc', '#5b3fa0')}
               ${(why || how) ? `<div style="background:#e8f0ff;border-radius:11px;padding:9px 12px;margin-top:8px;">${why ? `<div style="font-size:8.5px;letter-spacing:1.2px;font-weight:700;color:#2a4fb0;">WHY YOU LOST MARKS</div><div style="font-size:12.5px;line-height:1.5;margin-bottom:${how ? 6 : 0}px;">${_escH(why)}</div>` : ''}${how ? `<div style="font-size:8.5px;letter-spacing:1.2px;font-weight:700;color:#2a4fb0;">HOW TO IMPROVE</div><div style="font-size:12.5px;line-height:1.5;">${_escH(how)}</div>` : ''}</div>` : box('FEEDBACK', legacy, '#e8f0ff', '#2a4fb0')}</div>`;
         };
-        // The storage bucket only allows the student app to read pictures into a canvas. If this origin is not allowed, lay the cards out without the picture.
-        const imgOk: boolean = urls.length ? await new Promise<boolean>(res => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => res(true); im.onerror = () => res(false); setTimeout(() => res(false), 8000); im.src = urls[0]; }) : false;
+        // Load each needed sheet picture ONCE (needs the storage CORS setting), shrink it, and embed it as a data URL.
+        // If a picture cannot be loaded, the page is laid out without it instead of hanging.
+        const picOf = new Map<number, string>();
+        const need = [...byPage.keys()].sort((a, b) => a - b); let loaded = 0;
+        const loadPic = async (pg: number) => {
+            const u = urls[pg]; if (!u) return;
+            try {
+                const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 20000);
+                const blob = await (await fetch(u, { mode: 'cors', signal: ctl.signal })).blob(); clearTimeout(to);
+                const bmp = await createImageBitmap(blob); const w = Math.min(900, bmp.width); const h = Math.round(bmp.height * w / bmp.width);
+                const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d')!; g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
+                picOf.set(pg, cv.toDataURL('image/jpeg', 0.8));
+            } catch (e) { console.warn('[osm pdf] sheet picture not available for page', pg + 1, e); }
+        };
+        for (let k = 0; k < need.length; k += 3) { say(`Loading answer sheet ${Math.min(k + 3, need.length)} of ${need.length}…`); await Promise.all(need.slice(k, k + 3).map(loadPic)); loaded = picOf.size; }
+        const imgOk = loaded > 0;
         const sheetPages: HTMLElement[] = [];
         for (const pg of [...byPage.keys()].sort((a, b) => a - b)) {
-            const url = urls[pg]; const list = byPage.get(pg)!;
+            const list = byPage.get(pg)!;
             sheetPages.push(mk(1123, `<div style="padding:30px 36px;background:#f5f6fb;">
               <div style="background:#37474f;color:#fff;border-radius:12px;padding:11px 20px;display:flex;justify-content:space-between;font-size:13px;"><b>ANSWER SHEET — PAGE ${pg + 1}</b><span style="opacity:.85;">${_escH(nm.toUpperCase())} &nbsp;${_escH(report.rollNumber || '')}</span></div>
-              <div style="display:grid;grid-template-columns:${imgOk ? '520px 1fr' : '1fr'};gap:20px;margin-top:16px;align-items:start;">
-                ${imgOk ? `<div style="background:#fff;border:1px solid #e3e6f3;border-radius:14px;padding:8px;">${url ? `<img src="${_escH(url)}" crossorigin="anonymous" style="width:100%;display:block;border-radius:8px;">` : ''}</div>` : ''}
+              <div style="display:grid;grid-template-columns:${picOf.has(pg) ? '520px 1fr' : '1fr'};gap:20px;margin-top:16px;align-items:start;">
+                ${picOf.has(pg) ? `<div style="background:#fff;border:1px solid #e3e6f3;border-radius:14px;padding:8px;"><img src="${picOf.get(pg)}" style="width:100%;display:block;border-radius:8px;"></div>` : ''}
                 <div>${list.map(card).join('')}</div></div></div>`));
         }
         // ── learning summary ──
@@ -24703,11 +24718,13 @@ async function osmAnalysisPdf(report: any, ctx: any) {
             ${steps.map((t, i) => `<div style="display:flex;gap:12px;align-items:center;border:1px solid #e3e6f3;border-radius:99px;padding:9px 16px;margin:8px 0;font-size:12.5px;"><span style="width:24px;height:24px;border-radius:50%;background:#e1f4e8;color:${green};font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">${i + 1}</span>${_escH(typeof t === 'string' ? t : t?.text || '')}</div>`).join('') || '<div style="color:#7f8c8d;font-size:12px;">—</div>'}
             <div style="margin-top:20px;font-size:10px;color:#95a5a6;">Confidential — for student and parent use only · ClassMap AI · ${_escH(when)}</div></div>`);
         // wait for every sheet image
-        await Promise.all(sheetPages.flatMap(pg => Array.from(pg.querySelectorAll('img')).map(img => (img as HTMLImageElement).complete ? Promise.resolve() : new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); }))));
+        await Promise.all(sheetPages.flatMap(pg => Array.from(pg.querySelectorAll('img')).map(img => (img as HTMLImageElement).decode ? (img as HTMLImageElement).decode().catch(() => { /* */ }) : Promise.resolve())));
         await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r));
         const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' }); let isFirstPage = true;
+        const totalPages = 2 + sheetPages.length; let doneP = 0;
         const addEl = async (el: HTMLElement, landscape: boolean, w: number) => {
-            const canvas = await html2canvas(el, { scale: 1.6, useCORS: true, backgroundColor: '#ffffff', logging: false, windowWidth: w });
+            say(`Preparing page ${++doneP} of ${totalPages}…`); await new Promise(r => setTimeout(r, 20));
+            const canvas = await html2canvas(el, { scale: 1.4, useCORS: true, backgroundColor: '#ffffff', logging: false, windowWidth: w });
             if (!canvas.width || !canvas.height) return;
             if (!isFirstPage) pdf.addPage('a4', landscape ? 'l' : 'p'); else if (landscape) { pdf.deletePage(1); pdf.addPage('a4', 'l'); } isFirstPage = false;
             const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight(); const ih = pw * canvas.height / canvas.width; const img = canvas.toDataURL('image/jpeg', 0.88);
@@ -24716,6 +24733,7 @@ async function osmAnalysisPdf(report: any, ctx: any) {
         await addEl(p1, false, 794);
         for (const sp of sheetPages) await addEl(sp, true, 1123);
         await addEl(summary, false, 794);
+        say('Saving the PDF…');
         pdf.save(`${(nm || 'student').replace(/[^\w]+/g, '_')}_${(test || 'exam').replace(/[^\w]+/g, '_')}_analysis.pdf`);
     } catch (e) { console.error('[osm analysis pdf]', e); showFeedbackMessage('Could not create the analysis PDF.', 'error'); }
     finally { made.forEach(d => d.remove()); toggleLoading(false); }
@@ -30948,7 +30966,7 @@ initOsm({
     typeset: (el) => typesetMathInContainer(el),
     orLosers: (reports, questions) => computeOrLoserQNums(reports as any, questions as any),
     backToClass: () => { closeOsm(); if (currentClassForView) handleLoadIndividualClassPage(currentClassForView); },
-    analysisPdf: (report: any, ctx: any) => osmAnalysisPdf(report, ctx),
+    analysisPdf: (report: any, ctx: any, onProgress?: (t: string) => void) => osmAnalysisPdf(report, ctx, onProgress),
 } as any);
 
 // Main execution starts here
