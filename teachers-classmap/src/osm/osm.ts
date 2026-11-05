@@ -58,6 +58,21 @@ interface Roster { id: string; className: string; section: string; subject: stri
 interface StuDoc { notes?: Record<string, { t: string; by: string; n: string; at: number }>; pagesVersion?: number; studentUid: string; studentName: string; rollNumber: string; pages?: { url: string; path: string }[]; marks?: Record<string, { v: number; by: string; n: string; t: number }>; done?: Record<string, { n: string; t: number }>; }
 interface Meta { assign?: Record<string, number[]>; readyForAnalysis?: boolean; }
 
+const _svg = (d: string) => `<svg class="osm-ic" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON: Record<string, string> = {
+    edit: _svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+    send: _svg('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>'),
+    file: _svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/>'),
+    upload: _svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>'),
+    check: _svg('<path d="M20 6 9 17l-5-5"/>'),
+    plus: _svg('<path d="M12 5v14M5 12h14"/>'),
+    eyeoff: _svg('<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22"/>'),
+    pen: _svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+    msg: _svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>'),
+    back: _svg('<path d="M19 12H5M12 19l-7-7 7-7"/>'),
+    next: _svg('<path d="M5 12h14M12 5l7 7-7 7"/>'),
+    user: _svg('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'),
+};
 const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const qk = (i: number) => `q${i}`;
 const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -206,7 +221,7 @@ export async function renderOsmExamRows(container: HTMLElement, roster: Roster) 
 
 function shell(title: string, sub: string, bodyHtml: string, backLabel = 'Back to class') {
     return `<div class="osm-top">
-        <button class="osm-btn ghost" id="osm-close">← ${esc(backLabel)}</button>
+        <button class="osm-btn ghost" id="osm-close">${ICON.back}<span>${esc(backLabel)}</span></button>
         <div class="osm-titlebox"><div class="osm-title">${esc(title)}</div><div class="osm-sub">${sub}</div></div>
         <div class="osm-top-right"></div></div>
       <div class="osm-body">${bodyHtml}</div>`;
@@ -283,18 +298,18 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
               <div class="osm-kpi"><b>${publishedN}</b><span>published</span></div>
             </div>
             <div class="osm-toolbar-btns">
-              ${toPublish.length ? `<button class="osm-btn primary" id="osm-pub-all">Publish all analysed (${toPublish.length})</button>` : ''}
-              <button class="osm-btn" id="osm-assign" title="Pick which questions you will mark, if co-teachers split the paper">My questions${myAssign.length ? ` (${myAssign.length})` : ''}</button>
+              ${toPublish.length ? `<button class="osm-btn primary" id="osm-pub-all">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
+              <button class="osm-btn" id="osm-assign" title="Pick which questions you will mark, if co-teachers split the paper">${ICON.user}<span>My questions${myAssign.length ? ` (${myAssign.length})` : ''}</span></button>
             </div>
           </div>
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc, parent }) => `<tr>
             <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
-            <td>${d?.pages?.length ? `<span class="osm-pgs">${d.pages.length} page${d.pages.length > 1 ? 's' : ''}</span> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Add / replace</button>` : `<button class="osm-btn small osm-up" data-uid="${esc(s.uid)}">⬆ Upload sheet</button>`}</td>
+            <td>${d?.pages?.length ? `<span class="osm-pgs">${d.pages.length} page${d.pages.length > 1 ? 's' : ''}</span> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Add / replace</button>` : `<button class="osm-btn small osm-up" data-uid="${esc(s.uid)}">${ICON.upload}<span>Upload sheet</span></button>`}</td>
             <td>${d?.pages?.length ? `<b>${fmt1(parent?.overallScore ?? sc.total)}</b> / ${declaredTotal(paper) || '—'}` : '—'}</td>
             <td>${teachers.map(t => `<span class="osm-chip ${st.doneBy.includes(t.uid) ? 'on' : ''}" title="${esc(t.name)}">${esc(shortName(t.name, teachers))}${st.doneBy.includes(t.uid) ? ' ✓' : ''}</span>`).join('')}</td>
-            <td><span class="osm-badge ${st.code}">${esc(st.label)}</span></td>
-            <td class="osm-act">${d?.pages?.length ? `<button class="osm-btn primary osm-markbtn osm-open" data-uid="${esc(s.uid)}">Mark</button>` : ''}${parent ? `<button class="osm-btn small osm-fbbtn" data-uid="${esc(s.uid)}">Feedback</button>${parent.published ? `<button class="osm-link osm-unpub" data-uid="${esc(s.uid)}">Unpublish</button>` : `<button class="osm-btn small osm-pub" data-uid="${esc(s.uid)}">Publish</button>`}` : ''}</td>
+            <td><span class="osm-badge ${st.code}"><i></i>${esc(st.label)}</span></td>
+            <td class="osm-act">${d?.pages?.length ? `<button class="osm-btn primary osm-markbtn osm-open" data-uid="${esc(s.uid)}">${ICON.pen}<span>Mark</span></button>` : ''}${parent ? `<button class="osm-btn soft osm-fbbtn" data-uid="${esc(s.uid)}">${ICON.msg}<span>Feedback</span></button>${parent.published ? `<button class="osm-btn quiet osm-unpub" data-uid="${esc(s.uid)}" title="Remove from the student's app">${ICON.eyeoff}<span>Unpublish</span></button>` : `<button class="osm-btn outline osm-pub" data-uid="${esc(s.uid)}">${ICON.send}<span>Publish</span></button>`}` : ''}</td>
           </tr>`).join('')}
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
@@ -471,7 +486,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     el.innerHTML = `
       <div class="osm-desk ${theme === 'dark' ? 'dark' : ''}" id="osm-desk">
         <div class="osm-desk-top">
-          <button class="osm-btn ghost" id="osm-close">← Papers</button>
+          <button class="osm-btn ghost" id="osm-close">${ICON.back}<span>Papers</span></button>
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
             <div class="osm-seg"><button id="t-view" class="on" title="Scroll / look">☝ View</button><button id="t-pen" title="Pen">✏ Pen</button><button id="t-note" title="Type a text note on the page (click where it should go)">Aa Note</button><button id="t-erase" title="Erase your own pen marks or notes">⌫ Erase</button></div>
@@ -678,7 +693,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     function tabsHtml() {
         if (!fbReport) return '';
-        return `<div class="osm-tabs"><button data-view="mark" class="${view === 'mark' ? 'on' : ''}">✍ Marking</button><button data-view="fb" class="${view === 'fb' ? 'on' : ''}">💬 Feedback</button></div>${view === 'mark' ? '<div class="osm-sub osm-pad">This sheet is already analysed. A mark changed here also updates the report.</div>' : ''}`;
+        return `<div class="osm-tabs"><button data-view="mark" class="${view === 'mark' ? 'on' : ''}">${ICON.pen}<span>Marking</span></button><button data-view="fb" class="${view === 'fb' ? 'on' : ''}">${ICON.msg}<span>Feedback</span></button></div>${view === 'mark' ? '<div class="osm-sub osm-pad">This sheet is already analysed. A mark changed here also updates the report.</div>' : ''}`;
     }
     function wireTabs() {
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-tabs button').forEach(b => b.addEventListener('click', async () => { await flushMarks(); await flushFb(); view = b.dataset.view as any; renderSide(); }));
@@ -696,8 +711,10 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         qr.whyLost = why; qr.howToImprove = how; qr.teacherNote = note;
         qr.finalFeedback = [note ? `Teacher's note: ${note}` : '', qr.headline || '', why ? `Where marks were lost: ${why}` : '', how ? `How to improve: ${how}` : ''].filter(Boolean).join('\n\n');
         const t = [note ? `Teacher's note: ${note}` : '', why, how].filter(Boolean).join(' ').trim();   // the student's marker note beside the sheet carries the same text
-        if (t) { if (qr.stepWiseEvaluation?.length) qr.stepWiseEvaluation[0].comment = t; else qr.stepWiseEvaluation = [{ pageIndex: (qr.answerPageIndex >= 0 ? qr.answerPageIndex + 1 : 1), stepPoint: [], marks: qr.marksAwarded || 0, comment: t }]; } else qr.stepWiseEvaluation = [];
+        if (t) { if (qr.stepWiseEvaluation?.length) qr.stepWiseEvaluation[0].comment = t; else qr.stepWiseEvaluation = [{ pageIndex: (qr.answerPageIndex >= 0 ? qr.answerPageIndex + 1 : 1), stepPoint: [], marks: (Number(qr.marksAwarded) || 0) >= (Number(qr.maxMarksForQuestion) || 0) ? (Number(qr.marksAwarded) || 0) : 0, comment: t }]; } else qr.stepWiseEvaluation = [];
     }
+    const editBtn = (has: boolean) => has ? `${ICON.edit}<span>Edit</span>` : `${ICON.plus}<span>Add feedback</span>`;
+    const doneBtn = `${ICON.check}<span>Done</span>`;
     const plainKey = (t: any) => String(t ?? '').replace(/\\\(|\\\)|\\\[|\\\]/g, '').replace(/\\text\{([^}]*)\}/g, '$1').replace(/\\d?frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)').replace(/\\times/g, '×').replace(/\\([a-zA-Z]+)/g, '$1').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
     const rbox = (cls: string, label: string, text: string) => text ? `<div class="osm-rbox ${cls}"><div class="osm-rlab">${label}</div><div>${esc(text).replace(/\n/g, '<br>')}</div></div>` : '';
     function fbView(qr: any) {
@@ -716,7 +733,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
               <label>Teacher's note <small>(optional)</small></label><textarea class="osm-fbta" data-f="note" data-i="${i}" rows="2">${esc(note)}</textarea>
               <label>Why marks were lost</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
               <label>How to improve</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
-            <div class="osm-rq-foot"><button class="osm-link osm-fbedit" data-i="${i}">${(why || how || note) ? '✎ Edit feedback' : '＋ Add feedback'}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div>${esc(plainKey(q.answer))}</div></details>` : ''}</div>`}
+            <div class="osm-rq-foot"><button class="osm-btn tiny osm-fbedit" data-i="${i}">${editBtn(!!(why || how || note))}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div>${esc(plainKey(q.answer))}</div></details>` : ''}</div>`}
         </div>`;
     }
     function ovView(k: string, text: string) {
@@ -727,7 +744,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         return items.map(t => `<span class="osm-pill ${k === 'strengths' ? 'g' : 'a'}">${esc(t.replace(/^\[([^\]]+)\].*$/, '$1'))}</span>`).join('');
     }
     function ovBlock(k: string, label: string, text: string, list: boolean) {
-        return `<div class="osm-ovb"><div class="osm-ovh"><b>${label}</b><button class="osm-link osm-ovedit" data-k="${k}">✎ Edit</button></div><div class="osm-ovtext" data-k="${k}">${ovView(k, text)}</div><textarea class="osm-ovta" data-k="${k}" rows="${list ? 6 : 4}" style="display:none">${esc(text)}</textarea></div>`;
+        return `<div class="osm-ovb"><div class="osm-ovh"><b>${label}</b><button class="osm-btn tiny osm-ovedit" data-k="${k}">${editBtn(true)}</button></div><div class="osm-ovtext" data-k="${k}">${ovView(k, text)}</div><textarea class="osm-ovta" data-k="${k}" rows="${list ? 6 : 4}" style="display:none">${esc(text)}</textarea></div>`;
     }
     function bars(rows: { label: string; val: string; pct: number; col: string }[]) {
         return `<div class="osm-bars">${rows.map(r => `<div class="osm-bar2"><span class="osm-bl">${esc(r.label)}</span><span class="osm-bt"><i style="width:${Math.max(0, Math.min(100, r.pct))}%;background:${r.col}"></i></span><b style="color:${r.col}">${esc(r.val)}</b></div>`).join('')}</div>`;
@@ -740,25 +757,39 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const cm: any[] = of.conceptMastery || an.conceptMastery || []; const flags: any[] = an.flags || []; const lb: any[] = an.lostByMode || [];
         const win = an.marksToWinBack ?? Math.max(0, dt - score); const gr = pctv >= 90 ? 'A+' : pctv >= 80 ? 'A' : pctv >= 70 ? 'B+' : pctv >= 60 ? 'B' : pctv >= 50 ? 'C' : 'D';
         const col = (p: number) => p >= 80 ? '#1e8e4e' : p >= 50 ? '#d17a0a' : '#d12f3a';
+        const nLost = fbReport.filter(r => !r._runtimeOrLoser && (Number(r.marksAwarded) || 0) < (Number(r.maxMarksForQuestion) || 0)).length; const nAll = fbReport.filter(r => !r._runtimeOrLoser).length;
+        const toneOf = (r: any) => r._runtimeOrLoser ? 'gray' : (Number(r.marksAwarded) || 0) >= (Number(r.maxMarksForQuestion) || 0) ? 'full' : (Number(r.marksAwarded) || 0) > 0 ? 'part' : 'zero';
         sideEl.innerHTML = `${tabsHtml()}
-          <div class="osm-fbhead"><div class="osm-fbscore"><span class="osm-fbbig">${fmt1(score)}</span><span class="osm-fbof"> / ${dt || '—'}</span><span class="osm-grade" style="background:${col(pctv)}">${pctv}% · Grade ${gr}</span></div>
-            <div class="osm-pubrow"><span class="osm-badge ${pub ? 'published' : 'analysed'}">${pub ? 'Published' : 'Analysed · ready to publish'}</span><span id="osm-save" class="osm-save"></span></div>
-            <div class="osm-pubrow"><button class="osm-btn small primary" id="fb-publish">${pub ? 'Re-publish' : 'Publish'}</button>${pub ? '<button class="osm-btn small" id="fb-unpublish">Unpublish</button>' : ''}<button class="osm-btn small" id="fb-pdf">📄 Analysis PDF</button></div>
-            ${pub ? '<div class="osm-sub">Edits are saved here. Click Re-publish to update the student’s copy.</div>' : ''}</div>
-          <div class="osm-fbscroll" id="osm-fbs">
+          <div class="osm-fbhead">
+            <div class="osm-fbtop"><div class="osm-fbscore"><span class="osm-fbbig">${fmt1(score)}</span><span class="osm-fbof">/ ${dt || '—'}</span></div><span class="osm-grade" style="background:${col(pctv)}">${pctv}% · Grade ${gr}</span></div>
+            <div class="osm-fbstat"><span class="osm-badge ${pub ? 'published' : 'analysed'}"><i></i>${pub ? 'Published' : 'Analysed · ready to publish'}</span><span id="osm-save" class="osm-save"></span></div>
+            <div class="osm-fbacts"><button class="osm-btn primary" id="fb-publish">${ICON.send}<span>${pub ? 'Re-publish' : 'Publish'}</span></button><button class="osm-btn" id="fb-pdf">${ICON.file}<span>Analysis PDF</span></button>${pub ? `<button class="osm-btn quiet" id="fb-unpublish">${ICON.eyeoff}<span>Unpublish</span></button>` : ''}</div>
+            ${pub ? '<div class="osm-hint">Edits are saved here. Click Re-publish to update the student’s copy.</div>' : ''}
+          </div>
+          <div class="osm-fbbar"><div class="osm-seg2"><button class="on" data-fl="lost">Lost marks <b>${nLost}</b></button><button data-fl="all">All questions <b>${nAll}</b></button></div></div>
+          <div class="osm-fbscroll" id="osm-fbs" data-f="lost">
+            <div class="osm-qmap" title="Jump to a question">${fbReport.map((r, i) => `<button class="osm-qm ${toneOf(r)}" data-i="${i}">${esc(r.questionNumber)}</button>`).join('')}</div>
             ${fbReport.map((qr, i) => fbCard(qr, i)).join('')}
-            <div class="osm-ov"><div class="osm-ovtitle">YOUR LEARNING SUMMARY</div>
-              <div class="osm-win"><b>${fmt1(win)}</b> marks to win back out of ${dt || '—'}</div>
+            <div class="osm-ov"><div class="osm-ovtitle">Learning summary</div>
+              <div class="osm-win"><b>${fmt1(win)}</b><span>marks to win back out of ${dt || '—'}</span></div>
               ${ovBlock('summary', 'Summary', of.summary || '', false)}
-              ${lb.length ? (() => { const tot = lb.reduce((t, x) => t + (Number(x.marks) || 0), 0) || 1; return `<div class="osm-ovb"><div class="osm-ovh"><b>Where the marks went</b><span class="osm-muted" style="font-size:.72rem">share of lost marks, by kind of mistake</span></div>${bars(lb.map(x => ({ label: x.label, val: `${Math.round(x.marks / tot * 100)}%`, pct: x.marks / tot * 100, col: '#d12f3a' })))}</div>`; })() : ''}
-              <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted" style="font-size:.72rem">weakest first · worked out from the marks</span></div>${bars(cm.map(c => ({ label: c.topic, val: `${c.pct}%`, pct: Number(c.pct) || 0, col: col(Number(c.pct) || 0) })))}</div>
+              ${lb.length ? (() => { const tot = lb.reduce((t, x) => t + (Number(x.marks) || 0), 0) || 1; return `<div class="osm-ovb"><div class="osm-ovh"><b>Where the marks went</b><span class="osm-muted">share of lost marks, by kind of mistake</span></div>${bars(lb.map(x => ({ label: x.label, val: `${Math.round(x.marks / tot * 100)}%`, pct: x.marks / tot * 100, col: '#d12f3a' })))}</div>`; })() : ''}
+              <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted">weakest first · worked out from the marks</span></div>${bars(cm.map(c => ({ label: c.topic, val: `${c.pct}%`, pct: Number(c.pct) || 0, col: col(Number(c.pct) || 0) })))}</div>
               ${ovBlock('strengths', 'What you did well', linesOf(of.strengths), true)}
               ${ovBlock('areas', 'Where to improve', linesOf(of.areasForImprovement), true)}
               ${ovBlock('steps', 'Your next steps', linesOf(of.nextSteps), true)}
-              ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this):</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}
+              ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this)</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}
             </div>
           </div>
-          <div class="osm-foot"><div class="osm-nav"><button class="osm-btn small" id="osm-prev" ${pos > 0 ? '' : 'disabled'}>← Previous student</button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}>Next student →</button></div></div>`;
+          <div class="osm-foot"><div class="osm-nav"><button class="osm-btn small" id="osm-prev" ${pos > 0 ? '' : 'disabled'}>${ICON.back}<span>Previous</span></button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div></div>`;
+        // filter (lost marks / all) and the question map
+        const fbs = sideEl.querySelector('#osm-fbs') as HTMLElement;
+        sideEl.querySelectorAll<HTMLButtonElement>('.osm-seg2 button').forEach(b2 => b2.addEventListener('click', () => { fbs.dataset.f = b2.dataset.fl!; sideEl.querySelectorAll('.osm-seg2 button').forEach(x => x.classList.toggle('on', x === b2)); fbs.scrollTop = 0; }));
+        sideEl.querySelectorAll<HTMLButtonElement>('.osm-qm').forEach(b2 => b2.addEventListener('click', () => {
+            const card2 = sideEl.querySelector(`.osm-rq[data-i="${b2.dataset.i}"]`) as HTMLElement | null; if (!card2) return;
+            if (getComputedStyle(card2).display === 'none') { fbs.dataset.f = 'all'; sideEl.querySelectorAll('.osm-seg2 button').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.fl === 'all')); }
+            fbs.scrollTo({ top: card2.offsetTop - fbs.offsetTop - 6, behavior: 'smooth' }); card2.classList.add('flash'); setTimeout(() => card2.classList.remove('flash'), 1200);
+        }));
         (sideEl.querySelector('#osm-fbs') as HTMLElement).scrollTop = prev;
         wireTabs();
         sideEl.querySelector('#osm-prev')?.addEventListener('click', async () => { await flushFb(); pos > 0 && openDesk(roster, paper, teachers, order[pos - 1], order, view); });
@@ -766,8 +797,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         // per-question feedback: ✎ Edit opens the three boxes; typing saves by itself
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-fbedit').forEach(b => b.addEventListener('click', () => {
             const i = Number(b.dataset.i); const ed = sideEl.querySelector(`.osm-rq-edit[data-i="${i}"]`) as HTMLElement; const vw = sideEl.querySelector(`.osm-rq-view[data-i="${i}"]`) as HTMLElement;
-            if (ed.style.display === 'none') { ed.style.display = 'block'; vw.style.display = 'none'; b.textContent = '✔ Done'; (ed.querySelector('textarea[data-f="why"]') as HTMLTextAreaElement).focus(); }
-            else { const p = fbParts(fbReport![i]); if (!(p.why || p.how || p.note)) { renderFb(); return; } ed.style.display = 'none'; vw.style.display = 'block'; vw.innerHTML = fbView(fbReport![i]); b.textContent = '✎ Edit feedback'; }
+            if (ed.style.display === 'none') { ed.style.display = 'block'; vw.style.display = 'none'; b.innerHTML = doneBtn; (ed.querySelector('textarea[data-f="why"]') as HTMLTextAreaElement).focus(); }
+            else { const p = fbParts(fbReport![i]); if (!(p.why || p.how || p.note)) { renderFb(); return; } ed.style.display = 'none'; vw.style.display = 'block'; vw.innerHTML = fbView(fbReport![i]); b.innerHTML = editBtn(true); }
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-fbta').forEach(ta => ta.addEventListener('input', () => {
             const i = Number(ta.dataset.i); const ed = sideEl.querySelector(`.osm-rq-edit[data-i="${i}"]`)!; const g = (f: string) => (ed.querySelector(`textarea[data-f="${f}"]`) as HTMLTextAreaElement).value.trim();
@@ -786,8 +817,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         // overall analysis blocks
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-ovedit').forEach(b => b.addEventListener('click', () => {
             const k = b.dataset.k!; const ta = sideEl.querySelector(`.osm-ovta[data-k="${k}"]`) as HTMLTextAreaElement; const tx = sideEl.querySelector(`.osm-ovtext[data-k="${k}"]`) as HTMLElement;
-            if (ta.style.display === 'none') { ta.style.display = 'block'; tx.style.display = 'none'; b.textContent = '✔ Done'; ta.focus(); }
-            else { ta.style.display = 'none'; tx.style.display = 'block'; b.textContent = '✎ Edit'; tx.innerHTML = ovView(k, ta.value); }
+            if (ta.style.display === 'none') { ta.style.display = 'block'; tx.style.display = 'none'; b.innerHTML = doneBtn; ta.focus(); }
+            else { ta.style.display = 'none'; tx.style.display = 'block'; b.innerHTML = editBtn(true); tx.innerHTML = ovView(k, ta.value); }
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-ovta').forEach(ta => ta.addEventListener('input', () => {
             const k = ta.dataset.k!; const split = (t: string) => t.split('\n').map(x => x.trim()).filter(Boolean); const o = (fbParent.overallFeedback ||= {});
@@ -854,7 +885,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-doneline">${paper.questions.length ? teachers.map(t => `<span class="osm-chip ${doc.done?.[t.uid] ? 'on' : ''}">${esc(shortName(t.name, teachers))}${doc.done?.[t.uid] ? ' ✓' : ''}</span>`).join('') : ''}</div>
             ${st.ready ? '<div class="osm-banner ok small">✔ Ready for analysis</div>' : ''}
             <button class="osm-btn ${iAmDone ? '' : 'primary'} wide" id="osm-given">${iAmDone ? '✓ Marks given — click to reopen' : 'Marks Given'}</button>
-            <div class="osm-nav"><button class="osm-btn small" id="osm-prev" ${pos > 0 ? '' : 'disabled'}>← Previous student</button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}>Next student →</button></div>
+            <div class="osm-nav"><button class="osm-btn small" id="osm-prev" ${pos > 0 ? '' : 'disabled'}>${ICON.back}<span>Previous</span></button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div>
           </div>`;
         statusEl = sideEl.querySelector('#osm-save');
         B.typeset(sideEl);
@@ -1010,6 +1041,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
 // ───────────────────────── styles (ClassMap look: Poppins, blue→purple gradient, soft rounded cards) ─────────────────────────
 function injectStyle() {
     if (document.getElementById('osm-style')) return;
+    if (!document.getElementById('osm-font')) { const l = document.createElement('link'); l.id = 'osm-font'; l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'; document.head.appendChild(l); }
     const s = document.createElement('style'); s.id = 'osm-style';
     s.textContent = `
 #osm-root{position:fixed;inset:0;z-index:9000;background:var(--osm-bg);color:var(--osm-fg);display:none;overflow:auto;font-family:'Poppins',system-ui,sans-serif;
@@ -1108,6 +1140,63 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-toast{background:#2b3040;color:#fff;padding:11px 18px;border-radius:14px;font-size:.88rem;box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:min(560px,92vw)}.osm-toast.error{background:#c0392b}.osm-toast.success{background:#1e9e5a}
 #osm-busy{position:fixed;inset:0;z-index:9900;background:rgba(245,247,250,.82);display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;font-family:'Poppins',system-ui,sans-serif;color:#34495e;font-weight:500}
 @media (max-width:900px){.osm-side{width:340px}.osm-kpis{display:none}}
+
+/* ───────── v2 polish: modern type, compact density, consistent buttons ───────── */
+#osm-root,.osm-modal,#osm-toasts,#osm-busy{font-family:'Inter','Poppins',system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.006em}
+#osm-root{font-size:13px;--osm-line:#e6eaf2;--osm-bg:#f6f8fc;--osm-soft:#f0f4ff;--osm-fg:#1f2937;--osm-muted:#6b7280}
+.osm-ic{flex:none}
+.osm-btn{height:34px;padding:0 14px;border-radius:10px;font-size:12.5px;font-weight:600;gap:7px;border:1px solid #dfe5f0;background:#fff;color:#1f2937;box-shadow:0 1px 1px rgba(16,24,40,.04);transition:background .15s,box-shadow .15s,transform .05s,border-color .15s}
+.osm-btn:hover{background:#f3f6fd;border-color:#c9d6f3}.osm-btn:active{transform:translateY(1px)}.osm-btn:focus-visible{outline:2px solid #2575fc;outline-offset:2px}
+.osm-btn.small{height:30px;padding:0 11px;font-size:12px;border-radius:9px}.osm-btn.tiny{height:26px;padding:0 9px;font-size:11.5px;border-radius:8px;gap:5px}.osm-btn.tiny .osm-ic{width:13px;height:13px}
+.osm-btn.primary{background:linear-gradient(135deg,#2f7bff,#6a3df0);border-color:transparent;color:#fff;box-shadow:0 1px 2px rgba(60,60,200,.25),0 6px 14px rgba(70,70,230,.22)}.osm-btn.primary:hover{filter:brightness(1.06);background:linear-gradient(135deg,#2f7bff,#6a3df0)}
+.osm-btn.soft{background:#eef3ff;border-color:#d6e2ff;color:#2552c9}.osm-btn.soft:hover{background:#e3ecff}
+.osm-btn.outline{background:#fff;border-color:#2f7bff;color:#2f6bf0}.osm-btn.outline:hover{background:#f0f5ff}
+.osm-btn.quiet{background:transparent;border-color:transparent;color:#6b7280;box-shadow:none}.osm-btn.quiet:hover{background:#f3f4f6;color:#b42318}
+.osm-btn.ghost{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.28);color:#fff;box-shadow:none}.osm-btn.ghost:hover{background:rgba(255,255,255,.26)}
+.osm-btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.osm-top,.osm-desk-top{padding:10px 20px}.osm-title{font-size:15px;font-weight:600}.osm-top .osm-sub,.osm-desk-top .osm-sub{font-size:12px}
+.osm-body{padding:18px 20px 50px}
+.osm-kpi{border-radius:12px;padding:8px 16px;box-shadow:0 1px 2px rgba(16,24,40,.05)}.osm-kpi b{font-size:1.25rem;font-weight:700}.osm-kpi span{font-size:.7rem}
+.osm-table-wrap{border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.05),0 8px 24px rgba(37,117,252,.05)}
+.osm-table{font-size:12.5px}.osm-table th{font-size:10.5px;letter-spacing:.06em;font-weight:600;padding:9px 14px}.osm-table td{padding:9px 14px}.osm-nm{font-weight:600}
+.osm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;font-size:11px;font-weight:600}.osm-badge i{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.85}
+.osm-chip{font-size:10.5px;padding:2px 8px}
+button.osm-link{font-size:11.5px}
+.osm-act{display:flex;align-items:center;gap:7px;flex-wrap:nowrap;white-space:nowrap}.osm-table td:nth-child(4){white-space:nowrap}.osm-markbtn{height:36px;min-width:92px;justify-content:center;padding:0 18px;font-size:13px;border-radius:11px}
+/* desk toolbar + tabs */
+.osm-seg button{font-size:12px;padding:6px 11px;display:inline-flex;align-items:center;gap:5px}.osm-seg button .osm-ic{width:13px;height:13px}
+.osm-tabs{padding:10px 12px 0;gap:4px;background:var(--osm-card)}.osm-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:9px 9px 0 0;padding:8px;font-size:12.5px;font-weight:600;color:#6b7280;background:#f3f4f8;border:1px solid var(--osm-line);border-bottom:0}.osm-tabs button.on{background:#fff;color:#2552c9;box-shadow:inset 0 2px 0 #2f7bff}
+.osm-nav .osm-btn{flex:1;justify-content:center}
+/* feedback panel */
+.osm-fbhead{padding:12px 14px 10px;background:#fff;border-bottom:1px solid var(--osm-line)}
+.osm-fbtop{display:flex;align-items:center;justify-content:space-between;gap:10px}.osm-fbscore{display:flex;align-items:baseline;gap:6px}.osm-fbbig{font-size:1.7rem;font-weight:700;letter-spacing:-.03em}.osm-fbof{font-size:.85rem;color:#9ca3af;font-weight:500}
+.osm-grade{margin:0;font-size:.7rem;padding:4px 11px;letter-spacing:0}
+.osm-fbstat{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
+.osm-fbacts{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}.osm-fbacts .osm-btn.primary{flex:1;justify-content:center;min-width:110px}
+.osm-hint{margin-top:8px;font-size:11.5px;color:#92600a;background:#fff7e6;border-radius:8px;padding:6px 10px}
+.osm-fbbar{padding:8px 12px;background:#fff;border-bottom:1px solid var(--osm-line)}
+.osm-seg2{display:flex;background:#f0f2f7;border-radius:10px;padding:3px;gap:3px}.osm-seg2 button{flex:1;border:0;background:transparent;border-radius:8px;padding:6px 8px;font-family:inherit;font-size:12px;font-weight:600;color:#6b7280;cursor:pointer}.osm-seg2 button b{margin-left:4px;font-weight:700;color:#9ca3af}.osm-seg2 button.on{background:#fff;color:#1f2937;box-shadow:0 1px 3px rgba(16,24,40,.12)}.osm-seg2 button.on b{color:#2f6bf0}
+.osm-fbscroll{padding:10px 12px 16px;background:var(--osm-bg)}
+.osm-fbscroll[data-f="lost"] .osm-rq.full,.osm-fbscroll[data-f="lost"] .osm-rq.gray{display:none}
+.osm-qmap{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}.osm-qm{min-width:30px;height:24px;padding:0 6px;border-radius:7px;border:1.5px solid;background:#fff;font-family:inherit;font-size:10.5px;font-weight:700;cursor:pointer}.osm-qm.full{border-color:#b9e3c8;color:#1e8e4e;background:#eefaf2}.osm-qm.part{border-color:#f4d7a3;color:#b8650a;background:#fff6e6}.osm-qm.zero{border-color:#f3b8bd;color:#c42b36;background:#fdecee}.osm-qm.gray{border-color:#e5e7eb;color:#9ca3af;background:#f8f9fb}.osm-qm:hover{filter:brightness(.96)}
+.osm-rq{border-radius:12px;padding:10px 12px;margin:7px 0;box-shadow:0 1px 2px rgba(16,24,40,.05);border:1px solid var(--osm-line);border-left-width:4px}.osm-rq.flash{box-shadow:0 0 0 3px #fbbf24}
+.osm-rq-n{font-size:13.5px;font-weight:700;letter-spacing:-.01em}.osm-rq-chip{font-size:11.5px}
+#osm-root .osm-fbmark{width:46px;font-size:12.5px;border-radius:8px}
+.osm-rbox{font-size:12px;line-height:1.55;border-radius:9px;padding:8px 11px}.osm-rlab{font-size:9.5px;letter-spacing:.08em}
+.osm-rq-foot{margin-top:8px;gap:8px}.osm-sol{font-size:11.5px}
+.osm-rq-edit label{font-size:11px;margin:8px 0 3px;font-weight:600}
+#osm-root .osm-fbta,#osm-root .osm-ovta{font-size:12.5px;border-radius:9px;border-color:#c9d6f3}
+.osm-rq.compact{padding:6px 12px}
+.osm-ov{margin-top:16px;padding-top:12px;border-top:1px solid var(--osm-line)}.osm-ovtitle{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#6b7280;font-weight:700;margin-bottom:8px}
+.osm-win{display:flex;align-items:baseline;gap:8px;background:linear-gradient(135deg,#f1ecff,#eaf1ff);border:1px solid #ddd6fb;border-radius:12px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:#4b5563}.osm-win b{font-size:1.6rem;color:#5b3fa0;letter-spacing:-.02em}
+.osm-ovb{background:#fff;border:1px solid var(--osm-line);border-radius:12px;padding:10px 12px;margin:8px 0}.osm-ovh{display:flex;justify-content:space-between;align-items:center;gap:8px}.osm-ovh b{font-size:12.5px;font-weight:700}.osm-ovh .osm-muted{font-size:10.5px}
+.osm-ovtext{font-size:12.5px;margin-top:6px}
+.osm-bar2{font-size:11.5px;margin:6px 0}.osm-bt{height:7px}
+.osm-pill{font-size:11px;padding:4px 10px;border-width:1px}.osm-step{font-size:12px;padding:6px 12px}
+.osm-flags{border-radius:12px;font-size:11.5px}
+.osm-foot{padding:10px 12px;background:#fff;border-top:1px solid var(--osm-line)}
+/* marking panel */
+.osm-q{border-radius:11px}.osm-score-num{font-size:1.3rem}
 `;
     document.head.appendChild(s);
 }

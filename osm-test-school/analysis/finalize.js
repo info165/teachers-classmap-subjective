@@ -66,7 +66,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match the rubric (teacher's mark is kept; worth a look)`);
      failureMode=f.failureMode||'';
      finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), `Where marks were lost: ${(f.whyWrong||'').trim()}`, `How to improve: ${(f.howToImprove||'').trim()}`].filter(Boolean).join('\n\n');
-     if(f.page) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:unatt,comment:`${tnote?`Teacher's note: ${tnote} `:''}${(f.whyWrong||'').trim()} ${(f.howToImprove||'').trim()}`.trim()}];
+     if(f.page) steps=[{pageIndex:f.page,stepPoint:[],marks:0,isMissing:unatt,   /* marks:0 so the student app shows the note as a lost-marks note (red), not a green tick */comment:`${tnote?`Teacher's note: ${tnote} `:''}${(f.whyWrong||'').trim()} ${(f.howToImprove||'').trim()}`.trim()}];
    } else {
      // full marks, or an OR alternative that is not counted: NO feedback is written
      if(counted&&tnote){ finalFeedback=`Teacher's note: ${tnote}`; if(Number.isInteger(f.page)) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:false,comment:`Teacher's note: ${tnote}`}]; }

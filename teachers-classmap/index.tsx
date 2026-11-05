@@ -24686,9 +24686,9 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
             try {
                 const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 20000);
                 const blob = await (await fetch(u, { mode: 'cors', signal: ctl.signal })).blob(); clearTimeout(to);
-                const bmp = await createImageBitmap(blob); const w = Math.min(640, bmp.width); const h = Math.round(bmp.height * w / bmp.width);
+                const bmp = await createImageBitmap(blob); const w = Math.min(1800, bmp.width); const h = Math.round(bmp.height * w / bmp.width);   // keep the handwriting sharp
                 const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const g = cv.getContext('2d')!; g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
-                picOf.set(pg, cv.toDataURL('image/jpeg', 0.75));
+                picOf.set(pg, cv.toDataURL('image/jpeg', 0.93));
             } catch (e) { console.warn('[osm pdf] sheet picture not available for page', pg + 1, e); }
         };
         for (let k = 0; k < need.length; k += 4) { say(`Loading answer sheet ${Math.min(k + 4, need.length)} of ${need.length}…`); await Promise.all(need.slice(k, k + 4).map(loadPic)); }
@@ -24739,10 +24739,10 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
             el.innerHTML = `${sp.inner}<div style="position:absolute;left:${PAD}px;right:${PAD}px;bottom:10px;display:flex;justify-content:space-between;font-size:8px;color:#95a5a6;"><span>Confidential — for student and parent use only</span><span>ClassMap AI · ${_escH(when)} · ${n + 1}</span></div>`;
             document.body.appendChild(el);
             await Promise.all(Array.from(el.querySelectorAll('img')).map(img => (img as HTMLImageElement).decode ? (img as HTMLImageElement).decode().catch(() => { /* */ }) : Promise.resolve()));
-            const canvas = await html2canvas(el, { scale: 1.25, backgroundColor: '#ffffff', logging: false, width: sp.w, height: sp.h, windowWidth: sp.w, windowHeight: sp.h });
+            const canvas = await html2canvas(el, { scale: 3, backgroundColor: '#ffffff', logging: false, width: sp.w, height: sp.h, windowWidth: sp.w, windowHeight: sp.h });   // print quality: ~290 dpi
             el.remove();
             if (n > 0) pdf.addPage('a4', sp.landscape ? 'l' : 'p'); else if (sp.landscape) { pdf.deletePage(1); pdf.addPage('a4', 'l'); }
-            pdf.addImage(canvas.toDataURL('image/jpeg', 0.82), 'JPEG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight(), undefined, 'FAST');
+            pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight(), undefined, 'SLOW');
         }
         say('Saving the PDF…');
         pdf.save(`${(nm || 'student').replace(/[^\w]+/g, '_')}_${(test || 'exam').replace(/[^\w]+/g, '_')}_analysis.pdf`);
