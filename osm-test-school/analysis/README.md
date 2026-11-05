@@ -29,3 +29,5 @@ Each lost-mark question needs `failureMode`: NEVER_KNEW (no idea / blank), KNEW_
 - Marks Given = verification: all roster teachers are recorded as verified so teacher/admin Publish works straight away; teachers can edit the analysis (autosaved) first.
 
 - Teachers can add an optional reason on any question in the marking desk (✎). It is exported as `students[].teacherNotes` and shown to the student verbatim as "Teacher's note: …". Your whyWrong must agree with it. The declared paper total is always the total: never compare it with the sum of question marks.
+
+- An OR alternative the student did NOT choose (`altNotChosen:true` in the feedback JSON) is never a weakness, lost mark or mastery item, even when both alternatives scored 0 (tie): it is left out like any other uncounted alternative.

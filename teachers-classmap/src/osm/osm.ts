@@ -672,7 +672,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         fbReport[i].marksAwarded = v;
         const items = fbReport.map(r => ({ questionNumber: r.questionNumber, marksAwarded: r.marksAwarded || 0, maxMarksForQuestion: r.maxMarksForQuestion, checkingInstructions: r.checkingInstructions || '' }));
         let losers: Set<string>; try { losers = B.orLosers(items, paper.questions); } catch { losers = new Set(); }
-        fbReport.forEach(r => { r._runtimeOrLoser = losers.has(r.questionNumber); });
+        fbReport.forEach(r => { r._runtimeOrLoser = losers.has(r.questionNumber) || !!r._unattemptedAlt; });   // an alternative the student did not choose stays uncounted
         fbParent.overallScore = fbReport.filter(r => !r._runtimeOrLoser).reduce((a, r) => a + (r.marksAwarded || 0), 0);
         queueReportSave(); queueOverallSave();
     }
@@ -750,7 +750,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-ov"><div class="osm-ovtitle">YOUR LEARNING SUMMARY</div>
               <div class="osm-win"><b>${fmt1(win)}</b> marks to win back out of ${dt || '—'}</div>
               ${ovBlock('summary', 'Summary', of.summary || '', false)}
-              ${lb.length ? `<div class="osm-ovb"><div class="osm-ovh"><b>Where the marks went</b><span class="osm-muted" style="font-size:.72rem">by kind of mistake</span></div>${bars(lb.map(x => ({ label: x.label, val: `${fmt1(x.marks)} ${x.marks === 1 ? 'mark' : 'marks'}`, pct: win ? x.marks / win * 100 : 0, col: '#d12f3a' })))}</div>` : ''}
+              ${lb.length ? (() => { const tot = lb.reduce((t, x) => t + (Number(x.marks) || 0), 0) || 1; return `<div class="osm-ovb"><div class="osm-ovh"><b>Where the marks went</b><span class="osm-muted" style="font-size:.72rem">share of lost marks, by kind of mistake</span></div>${bars(lb.map(x => ({ label: x.label, val: `${Math.round(x.marks / tot * 100)}%`, pct: x.marks / tot * 100, col: '#d12f3a' })))}</div>`; })() : ''}
               <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted" style="font-size:.72rem">weakest first · worked out from the marks</span></div>${bars(cm.map(c => ({ label: c.topic, val: `${c.pct}%`, pct: Number(c.pct) || 0, col: col(Number(c.pct) || 0) })))}</div>
               ${ovBlock('strengths', 'What you did well', linesOf(of.strengths), true)}
               ${ovBlock('areas', 'Where to improve', linesOf(of.areasForImprovement), true)}

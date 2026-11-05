@@ -41,7 +41,8 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const losersPre=new Set(s.losers||[]);
   man.questions.forEach((q,i)=>{
    const qn=q.questionNumber||String(i+1); const m=s.marks[qn]; const f=byIdx.get(i)||{}; const max=Number(q.marks)||0; const got=m.marks;
-   const loser=losersPre.has(qn); const counted=!loser; const lost=counted&&got<max;
+   const isAlt=/alternative question \(or\)/i.test(q.checkingInstructions||''); const notChosen=!!(f.altNotChosen&&isAlt);
+   const loser=losersPre.has(qn)||notChosen; const counted=!loser; const lost=counted&&got<max;
    const tag=`${R} Q${qn} (${fmtN(got)}/${fmtN(max)})`;
    if(!f.topic) {problems.push(`${tag}: topic missing`); bad=true;}
    if(!f.concept) {problems.push(`${tag}: concept (chapter-level group, e.g. "Atomic structure") missing`); bad=true;}
@@ -79,11 +80,11 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      finalFeedback,failureMode,failurePoint:lost?(f.failurePoint||''):'',prerequisiteConcept:lost?(f.prerequisiteConcept||''):'',
      studentOcrAnswer:'',answerPageIndices:page?[page-1]:[],answerPageIndex:page?page-1:-1,requiresReview:false,stepWiseEvaluation:steps,
      whyLost:lost?(f.whyWrong||'').trim():'',howToImprove:lost?(f.howToImprove||'').trim():'',teacherNote:tnote,studentWrote:lost?(f.studentWrote||''):'',headline:lost?(f.headline||'').trim():'',
-     _runtimeOrLoser:loser,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
+     _runtimeOrLoser:loser,_unattemptedAlt:notChosen,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
   });
   if(bad||reports.length!==man.questions.length) continue;
-  const losers=computeOrLoserQNums(reports,man.questions); reports.forEach(r=>r._runtimeOrLoser=losers.has(r.questionNumber));
-  if(reports.some(r=>r._runtimeOrLoser!==losersPre.has(r.questionNumber))) warnings.push(`${R}: OR losers recomputed differently from the export - check`);
+  const losers=computeOrLoserQNums(reports,man.questions); reports.forEach(r=>r._runtimeOrLoser=losers.has(r.questionNumber)||r._unattemptedAlt);
+  if(reports.some(r=>!r._unattemptedAlt&&r._runtimeOrLoser!==losersPre.has(r.questionNumber))) warnings.push(`${R}: OR losers recomputed differently from the export - check`);
   const counted=reports.filter(r=>!r._runtimeOrLoser);
   const total=counted.reduce((a,r)=>a+r.marksAwarded,0);
   // NOTE: the declared paper total is ALWAYS the total. Alternative (OR) questions both carry marks, so the sum of question marks is never compared with it.
