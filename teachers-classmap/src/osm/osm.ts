@@ -53,7 +53,7 @@ export function initOsm(bridge: OsmBridge) { B = bridge; injectStyle(); }
 // ───────────────────────── types ─────────────────────────
 interface Paper {
     owner: string; id: string; title: string; className: string; section: string; subject: string; stream: string;
-    totalMarks: number; questions: any[]; created: string; schoolName: string;
+    totalMarks: number; questions: any[]; created: string; schoolName: string; previewCopyOf?: any;
 }
 interface Roster { id: string; className: string; section: string; subject: string; stream?: string; schoolName: string; students: any[]; board?: string; teacherUid: string }
 interface StuDoc { notes?: Record<string, { t: string; by: string; n: string; at: number }>; pagesVersion?: number; studentUid: string; studentName: string; rollNumber: string; pages?: { url: string; path: string }[]; marks?: Record<string, { v: number; by: string; n: string; t: number }>; done?: Record<string, { n: string; t: number }>; }
@@ -141,7 +141,7 @@ async function loadPapers(r: Roster, teachers: { uid: string; name: string }[], 
                 if (String(x.className) !== String(r.className) || x.section !== r.section || x.subject !== r.subject) return;
                 if ((x.stream || '') !== (r.stream || '')) return;
                 all.push({
-                    owner: uid, id: d.id, title: x.assessmentTitle || 'Untitled', className: x.className, section: x.section,
+                    owner: uid, id: d.id, previewCopyOf: x.previewCopyOf, title: x.assessmentTitle || 'Untitled', className: x.className, section: x.section,
                     subject: x.subject, stream: x.stream || '', totalMarks: Number(x.totalMarks) || 0, questions: x.questions || [],
                     created: x.creationTimestamp || '', schoolName: x.schoolName || r.schoolName,
                 });
@@ -270,6 +270,13 @@ async function bakedSheetUrls(paper: Paper, uid: string, urls: string[]): Promis
     }
     return out;
 }
+// Papers copied for previewing never publish to the real students: they go to the one preview student account instead.
+async function publishTarget(paper: Paper, uid: string): Promise<string> {
+    if (!paper.previewCopyOf) return uid;
+    const me = B.teacher()!; const t = await B.db.collection('teachers').doc(me.uid).get(); const pu = t.exists ? t.data().previewStudentUid : '';
+    if (!pu) throw new Error('this is a preview paper and no preview student account is set up for it');
+    return pu;
+}
 async function publishOne(paper: Paper, uid: string) {
     await obFlush(); if (obPendingCount()) throw new Error('some of your recent changes are not saved to the cloud yet — wait for “All changes saved” at the top, then publish');
     const ref = subRef(paper, uid);
@@ -280,13 +287,15 @@ async function publishOne(paper: Paper, uid: string) {
     if (Array.isArray(forStudent.answerSheetImageUrls) && forStudent.answerSheetImageUrls.length) forStudent.answerSheetImageUrls = await bakedSheetUrls(paper, uid, forStudent.answerSheetImageUrls);
     const batch = B.db.batch();
     batch.update(ref, { published: true });
-    batch.set(B.db.collection('studentAssessments').doc(uid).collection('assessments').doc(`${paper.id}_${uid}`), plain(forStudent));
+    const target = await publishTarget(paper, uid);
+    if (paper.previewCopyOf) forStudent.assessmentTitle = `${paper.title} — ${s.data().studentName || ''}`.trim();
+    batch.set(B.db.collection('studentAssessments').doc(target).collection('assessments').doc(`${paper.id}_${uid}`), plain(forStudent));
     await batch.commit();
 }
 async function unpublishOne(paper: Paper, uid: string) {
     const batch = B.db.batch();
     batch.update(subRef(paper, uid), { published: false });
-    batch.delete(B.db.collection('studentAssessments').doc(uid).collection('assessments').doc(`${paper.id}_${uid}`));
+    batch.delete(B.db.collection('studentAssessments').doc(await publishTarget(paper, uid)).collection('assessments').doc(`${paper.id}_${uid}`));
     await batch.commit();
 }
 
