@@ -1083,11 +1083,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                 </div>
                 ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && !m.na && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${chipColor(v, max)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
                 <div class="osm-qfoot">
-                <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
                 ${m && m.by !== me.uid ? `<span class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</span>` : ''}
                 <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Write or speak why marks were cut on this question" ${mine ? '' : 'disabled'}>${ICON.pen}<span>Why marks cut?</span></button>
                 </div>
                 <div class="osm-reasonbox" style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}"><textarea class="osm-reason" data-i="${i}" rows="3" placeholder="Why were marks cut on this question? Write or speak…" ${mine ? '' : 'disabled'}>${esc(doc.notes?.[qk(i)]?.t || '')}</textarea></div>
+                <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
                 ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
               </div>`;
           }).join('')}
@@ -1336,7 +1336,12 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
-.osm-qfoot{display:flex;align-items:flex-start;gap:8px;margin-top:3px}.osm-qfoot .osm-det{flex:1;min-width:0;margin-top:0;font-size:.74rem}.osm-qfoot .osm-by{margin:2px 0 0;white-space:nowrap}
+.osm-qfoot{display:flex!important;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:8px;margin-top:4px!important;min-height:22px}
+.osm-qfoot .osm-by{margin:0!important;font-size:.7rem!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#osm-root .osm-qfoot .osm-rbtn{margin:0 0 0 auto!important;width:auto!important;min-height:0!important;height:20px!important;padding:0 8px!important;font-size:.66rem!important;font-weight:600;border-width:1px!important;border-radius:99px!important;display:inline-flex!important;align-items:center;gap:4px;flex:none;white-space:nowrap}
+#osm-root .osm-qfoot .osm-rbtn svg{width:10px!important;height:10px!important}#osm-root .osm-qfoot .osm-rbtn em{display:none}
+.osm-q > .osm-det{margin-top:3px!important;font-size:.72rem!important}.osm-q > .osm-det summary{white-space:nowrap}
+.osm-qs{overflow-x:hidden!important}
 #osm-root .osm-rbtn{width:auto;min-height:0;margin:0;padding:2px 9px;font-size:.7rem;border-width:1px;border-radius:99px;flex:none}#osm-root .osm-rbtn svg{width:11px;height:11px}
 .osm-q{padding:4px 8px 5px!important;margin:4px 0!important}.osm-chips{margin-top:3px!important}.osm-foot{padding:6px 10px!important;gap:4px!important}.osm-doneline{margin-bottom:0}
 .osm-actions{display:flex;gap:8px;align-items:stretch}.osm-actions #osm-given{flex:1;justify-content:center;font-weight:600}.osm-btn.done{background:#1e8e4e!important;border-color:#1e8e4e!important;color:#fff!important}
