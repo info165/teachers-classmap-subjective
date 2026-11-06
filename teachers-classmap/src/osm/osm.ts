@@ -735,6 +735,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         if (a.t === 'add') { const ix = arr.indexOf(a.s); if (ix >= 0) arr.splice(ix, 1); }
         else if (a.t === 'del') arr.splice(Math.min(a.ix, arr.length), 0, a.s);
         else if (a.t === 'edit') { const ix = arr.indexOf(a.cur); if (ix >= 0) arr[ix] = a.prev; }
+        else if (a.t === 'move') { a.s.x = a.ox; a.s.y = a.oy; }
         lastInkPage = a.p; renderInk(a.p); saveInk();
     }
     // eraser: the nearest one of YOUR marks within a generous reach is removed (no pin-pointing needed)
@@ -775,9 +776,14 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         }
         if (tool === 'note') {
             ev.preventDefault();
-            const own = (ev.target as Element).closest('text[data-t]') as SVGElement | null;
-            const idx = own && (own as any).dataset.t === me.uid ? Number((own as any).dataset.s) : -1;
-            openNoteEditor(i, svg, idx >= 0 ? inks[me.uid]?.[String(i)]?.[idx] : null, idx, pt(ev));
+            const arr0 = inks[me.uid]?.[String(i)] || []; const p0 = pt(ev); const hit = nearestOwn(i, p0, 14); const idx = hit >= 0 && arr0[hit].t !== undefined ? hit : -1;
+            if (idx < 0) { openNoteEditor(i, svg, null, -1, p0); return; }
+            // an existing note: drag it anywhere, or just click it to edit the words
+            const st: any = arr0[idx]; const ox = +st.x, oy = +st.y; let moved = false; svg.setPointerCapture(ev.pointerId);
+            const mvN = (e: PointerEvent) => { const p = pt(e); if (!moved && Math.hypot(p.x - p0.x, p.y - p0.y) < 6) return; moved = true; st.x = Number((ox + p.x - p0.x).toFixed(1)); st.y = Number((oy + p.y - p0.y).toFixed(1)); renderInk(i); };
+            const upN = () => { svg.removeEventListener('pointermove', mvN); svg.removeEventListener('pointerup', upN); svg.removeEventListener('pointercancel', upN);
+                if (moved) { undoStack.push({ t: 'move', p: i, s: st, ox, oy }); lastInkPage = i; saveInk(); } else openNoteEditor(i, svg, st, idx, p0); };
+            svg.addEventListener('pointermove', mvN); svg.addEventListener('pointerup', upN); svg.addEventListener('pointercancel', upN);
             return;
         }
         ev.preventDefault(); svg.setPointerCapture(ev.pointerId);
@@ -798,9 +804,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         pagesEl.querySelectorAll('.osm-note-edit').forEach(n => n.remove());
         const inner = svg.parentElement as HTMLElement; const vb = svg.viewBox.baseVal;
         const x = existing ? Number(existing.x) : at.x, y = existing ? Number(existing.y) : at.y;
-        const fs = existing ? Number(existing.w) || 24 : (penW === 2 ? 18 : penW === 3 ? 24 : 34);
+        const fs = existing ? Number(existing.w) || 28 : (penW === 2 ? 22 : penW === 3 ? 30 : 42);
         const ta = document.createElement('textarea'); ta.className = 'osm-note-edit'; ta.rows = 1; ta.placeholder = 'Type a note…'; ta.value = existing?.t || '';
-        ta.style.cssText = `left:${(x / vb.width * 100).toFixed(2)}%;top:${((y - fs) / vb.height * 100).toFixed(2)}%;color:${existing?.c || penColor};font-size:${(fs / vb.width * inner.clientWidth).toFixed(1)}px`;
+        // compact box that always stays inside the page (never runs off the edge), grows a little, then scrolls inside itself
+        const pw = inner.clientWidth, ph = inner.clientHeight; const bw = Math.max(130, Math.min(230, pw - 12)); const lx = Math.max(4, Math.min(x / vb.width * pw, pw - bw - 4)); const ty = Math.max(4, Math.min((y - fs) / vb.height * ph, ph - 70));
+        ta.style.cssText = `left:${lx.toFixed(0)}px;top:${ty.toFixed(0)}px;width:${bw}px;color:${existing?.c || penColor};font-size:${Math.max(13, Math.min(17, fs / vb.width * pw)).toFixed(0)}px`;
         inner.appendChild(ta); ta.focus(); ta.select();
         let done = false;
         const commit = (save: boolean) => {
@@ -813,7 +821,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             lastInkPage = i; renderInk(i); saveInk();
         };
         ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(true); } else if (e.key === 'Escape') { e.preventDefault(); commit(false); } });
-        ta.addEventListener('input', () => { ta.rows = Math.min(8, ta.value.split('\n').length); });
+        ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(110, ta.scrollHeight + 2) + 'px'; });
         ta.addEventListener('blur', () => commit(true));
     }
     // load existing ink (all teachers); live-updates
@@ -982,7 +990,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
               ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this)</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}
             </div>
           </div>
-          <div class="osm-foot"><div class="osm-nav"><button class="osm-btn small" id="osm-prev" ${pos > 0 ? '' : 'disabled'}>${ICON.back}<span>Previous</span></button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div></div>`;
+          <div class="osm-foot"><div class="osm-actions"><span style="flex:1"></span><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div></div>`;
         // filter (lost marks / all) and the question map
         const fbs = sideEl.querySelector('#osm-fbs') as HTMLElement;
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-seg2 button').forEach(b2 => b2.addEventListener('click', () => { fbs.dataset.f = b2.dataset.fl!; sideEl.querySelectorAll('.osm-seg2 button').forEach(x => x.classList.toggle('on', x === b2)); fbs.scrollTop = 0; }));
@@ -994,7 +1002,6 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         (sideEl.querySelector('#osm-fbs') as HTMLElement).scrollTop = prev;
         try { B.typeset(sideEl.querySelector('#osm-fbs') as HTMLElement); } catch { /* math stays readable */ }
         wireTabs();
-        sideEl.querySelector('#osm-prev')?.addEventListener('click', async () => { await flushFb(); pos > 0 && openDesk(roster, paper, teachers, order[pos - 1], order, view); });
         sideEl.querySelector('#osm-next')?.addEventListener('click', async () => { await flushFb(); pos < order.length - 1 && openDesk(roster, paper, teachers, order[pos + 1], order, view); });
         // per-question feedback: ✎ Edit opens the three boxes; typing saves by itself
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-fbedit').forEach(b => b.addEventListener('click', () => {
@@ -1072,10 +1079,10 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                   <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
                   <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
                   <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (greyed out, no marks, not counted as a weakness)">N/A</button>
-                  <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Optional: write why marks were cut on this question" ${mine ? '' : 'disabled'}>✎</button>
                 </div>
                 ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && !m.na && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${chipColor(v, max)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
-                <textarea class="osm-reason" data-i="${i}" rows="2" placeholder="Why were marks cut? (optional — the student will see this as your note)" ${mine ? '' : 'disabled'} style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}">${esc(doc.notes?.[qk(i)]?.t || '')}</textarea>
+                <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Private note for the AI feedback: why marks were cut here. Students never see it." ${mine ? '' : 'disabled'}>${ICON.pen}<span>Why were marks cut?</span><em>${doc.notes?.[qk(i)]?.t ? esc(doc.notes[qk(i)].t.length > 40 ? doc.notes[qk(i)].t.slice(0, 40) + '…' : doc.notes[qk(i)].t) : 'private · guides the AI feedback'}</em></button>
+                <div class="osm-reasonbox" style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}"><textarea class="osm-reason" data-i="${i}" rows="3" placeholder="Write or speak why marks were cut on this question…" ${mine ? '' : 'disabled'}>${esc(doc.notes?.[qk(i)]?.t || '')}</textarea><div class="osm-priv">🔒 Private to teachers. The student never sees this; the AI builds its feedback on it first.</div></div>
                 ${m && m.by !== me.uid ? `<div class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</div>` : ''}
                 ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
                 <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
@@ -1085,8 +1092,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <div class="osm-foot">
             <div class="osm-doneline">${paper.questions.length ? teachers.map(t => `<span class="osm-chip ${doc.done?.[t.uid] ? 'on' : ''}">${esc(shortName(t.name, teachers))}${doc.done?.[t.uid] ? ' ✓' : ''}</span>`).join('') : ''}</div>
             ${st.ready ? '<div class="osm-banner ok small">✔ Ready for analysis</div>' : ''}
-            <button class="osm-btn ${iAmDone ? '' : 'primary'} wide" id="osm-given">${iAmDone ? '✓ Marks given — click to reopen' : 'Marks Given'}</button>
-            <div class="osm-nav"><button class="osm-btn small" id="osm-prev" ${pos > 0 ? '' : 'disabled'}>${ICON.back}<span>Previous</span></button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div>
+            <div class="osm-actions"><button class="osm-btn ${iAmDone ? 'done' : 'primary'}" id="osm-given" title="${iAmDone ? 'Click to reopen and edit' : 'Click when you have finished marking this sheet'}">${iAmDone ? '✓ Completed' : 'Completed'}</button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div>
           </div>`;
         statusEl = sideEl.querySelector('#osm-save');
         B.typeset(sideEl);
@@ -1125,17 +1131,16 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             inp.value = b.dataset.v!; queueSave(i, inp.value, inp, true);
         }));
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-rbtn').forEach(b => b.addEventListener('click', () => {
-            const ta = sideEl.querySelector(`.osm-reason[data-i="${b.dataset.i}"]`) as HTMLTextAreaElement | null; if (!ta) return;
-            const show = ta.style.display === 'none'; ta.style.display = show ? 'block' : 'none'; if (show) ta.focus();
+            const ta = sideEl.querySelector(`.osm-reason[data-i="${b.dataset.i}"]`) as HTMLTextAreaElement | null; if (!ta) return; const bx = ta.closest('.osm-reasonbox') as HTMLElement;
+            const show = bx.style.display === 'none'; bx.style.display = show ? 'block' : 'none'; if (show) ta.focus();
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-reason').forEach(ta => ta.addEventListener('input', () => queueNote(Number(ta.dataset.i), ta.value)));
         sideEl.querySelector('#osm-given')!.addEventListener('click', toggleDone);
-        sideEl.querySelector('#osm-prev')?.addEventListener('click', () => pos > 0 && openDesk(roster, paper, teachers, order[pos - 1], order, view));
         sideEl.querySelector('#osm-next')?.addEventListener('click', () => pos < order.length - 1 && openDesk(roster, paper, teachers, order[pos + 1], order, view));
     }
     // Optional teacher reason for cut marks: autosaved per question; merge-write of ONE field, so co-teachers never overwrite each other.
     function queueNote(i: number, text: string) {
-        const btn = sideEl.querySelector(`.osm-rbtn[data-i="${i}"]`); btn?.classList.toggle('has', !!text.trim());
+        const btn = sideEl.querySelector(`.osm-rbtn[data-i="${i}"]`); btn?.classList.toggle('has', !!text.trim()); { const em = btn?.querySelector('em'); if (em) em.textContent = text.trim() ? (text.trim().length > 40 ? text.trim().slice(0, 40) + '…' : text.trim()) : 'private · guides the AI feedback'; }
         const t = text.trim(); const hadNote = !!doc.notes?.[qk(i)]; const entry: any = t ? { t: text, by: me.uid, n: me.name, at: Date.now() } : null;
         if (t) (doc.notes ||= {})[qk(i)] = entry; else if (doc.notes) delete doc.notes[qk(i)];
         obEnqueue({ key: `note:${paper.id}:${studentUid}:${qk(i)}`, kind: 'note', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: hadNote } }, 800);
@@ -1150,7 +1155,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const prevV = doc.marks?.[qk(i)]?.na ? 'na' : doc.marks?.[qk(i)]?.v;
         const entry = { v, by: me.uid, n: me.name, t: Date.now() };
         (doc.marks ||= {})[qk(i)] = entry;
-        // Editing a mark after "Marks Given" reopens this teacher's own done flag, so it can never be stale.
+        // Editing a mark after "Completed" reopens this teacher's own done flag, so it can never be stale.
         const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
         // saved on this device at once; sent to the cloud right after (and re-sent automatically if it cannot be)
         obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevV, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, immediate ? 0 : 600);
@@ -1166,13 +1171,13 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
         obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevM?.na ? 'na' : prevM?.v, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, 0);
         if (fbReport) applyMarkToReport(i, 0);
-        renderSide(); if (reopened) toast('You changed a mark, so “Marks Given” was reopened — click it again when finished.', 'info');
+        renderSide(); if (reopened) toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
     }
     function renderSideKeepFocus() {
         const a = document.activeElement as HTMLInputElement | null; const i = a?.classList.contains('osm-in') ? a.dataset.i : null; const v = a?.value;
         renderSide();
         if (i != null) { const n = sideEl.querySelector(`.osm-in[data-i="${i}"]`) as HTMLInputElement | null; if (n) { n.value = v ?? n.value; n.focus(); } }
-        toast('You changed a mark, so “Marks Given” was reopened — click it again when finished.', 'info');
+        toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
     }
     function refreshScoreOnly() {
         const sc = scoreFor(paper, doc.marks); const dt = declaredTotal(paper);
@@ -1203,12 +1208,41 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             const ref = stuRef(paper, studentUid);
             if (iAmDone) { await ref.update({ ['done.' + me.uid]: B.FieldValue.delete() }); delete doc.done![me.uid]; }
             else { await ref.set({ done: { [me.uid]: { n: me.name, t: Date.now() } } }, { merge: true }); (doc.done ||= {})[me.uid] = { n: me.name, t: Date.now() }; }
-            obLog({ by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid }, { type: 'done', text: iAmDone ? 'Reopened the marking for editing' : 'Clicked “Marks Given” (verified the marks)' });
+            obLog({ by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid }, { type: 'done', text: iAmDone ? 'Reopened the marking for editing' : 'Clicked “Completed” (marks verified)' });
             renderSide();
-            toast(iAmDone ? 'Reopened for editing.' : 'Marks given ✓', 'success');
+            toast(iAmDone ? 'Reopened for editing.' : 'Completed ✓', 'success');
         } catch (e: any) { toast('Could not update: ' + e.message, 'error'); }
     }
     renderSide();
+    // 🎤 speak instead of typing: the browser's own speech recognition (asks for the microphone once). Works in every text box where feedback is written.
+    {
+        const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition; let rec: any = null; let recBtn: HTMLElement | null = null;
+        const getLang = () => { try { return localStorage.getItem('osm-mic-lang') || 'en-IN'; } catch { return 'en-IN'; } };
+        const stopRec = () => { try { rec?.stop(); } catch { /* */ } rec = null; recBtn?.classList.remove('on'); recBtn = null; };
+        const MIC = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>';
+        const decorate = () => sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-reason,.osm-fbta,.osm-ovta').forEach(ta => {
+            if (ta.parentElement?.classList.contains('osm-micwrap') || ta.disabled) return;
+            const w = document.createElement('div'); w.className = 'osm-micwrap'; ta.parentElement!.insertBefore(w, ta); w.appendChild(ta);
+            w.insertAdjacentHTML('beforeend', `<button type="button" class="osm-miclang" title="Speaking language (click to switch English / Hindi)">${getLang() === 'hi-IN' ? 'हिं' : 'EN'}</button><button type="button" class="osm-mic" title="Speak instead of typing">${MIC}</button>`);
+            const mic = w.querySelector('.osm-mic') as HTMLElement, lg = w.querySelector('.osm-miclang') as HTMLElement;
+            [mic, lg].forEach(b => b.addEventListener('mousedown', e => e.preventDefault()));
+            lg.addEventListener('click', () => { const n = getLang() === 'hi-IN' ? 'en-IN' : 'hi-IN'; try { localStorage.setItem('osm-mic-lang', n); } catch { /* */ } sideEl.querySelectorAll('.osm-miclang').forEach(x => x.textContent = n === 'hi-IN' ? 'हिं' : 'EN'); if (rec) { const keep = recBtn; stopRec(); setTimeout(() => keep?.click(), 250); } });
+            mic.addEventListener('click', () => {
+                if (rec && recBtn === mic) { stopRec(); return; }
+                stopRec();
+                if (!SR) { toast('Voice typing needs Chrome or Edge. Please type here, or open ClassMap in Chrome.', 'info'); return; }
+                const r = new SR(); r.lang = getLang(); r.continuous = true; r.interimResults = true; rec = r; recBtn = mic; mic.classList.add('on');
+                const base = ta.value; let finalTxt = '';
+                r.onresult = (ev: any) => { let interim = ''; for (let k = ev.resultIndex; k < ev.results.length; k++) { const t = ev.results[k][0].transcript; if (ev.results[k].isFinal) finalTxt += (finalTxt && !/\s$/.test(finalTxt) ? ' ' : '') + t.trim(); else interim += t; }
+                    ta.value = (base ? base.replace(/\s+$/, '') + ' ' : '') + finalTxt + (interim ? (finalTxt ? ' ' : '') + interim : ''); ta.dispatchEvent(new Event('input', { bubbles: true })); };
+                r.onerror = (ev: any) => { if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') toast('Microphone is blocked. Click the lock icon in the address bar, allow the microphone for this site, then try again.', 'error'); else if (ev.error !== 'no-speech' && ev.error !== 'aborted') toast('Voice typing stopped (' + ev.error + ').', 'info'); stopRec(); };
+                r.onend = () => { if (rec === r) { try { r.start(); } catch { stopRec(); } } };   // keeps listening through pauses until you click the mic again
+                try { r.start(); } catch { stopRec(); }
+            });
+        });
+        const mo = new MutationObserver(decorate); mo.observe(sideEl, { childList: true, subtree: true }); decorate();
+        stopListeners.push(() => { mo.disconnect(); stopRec(); });
+    }
     const onSync = () => renderSync(); ob.subs.add(onSync); stopListeners.push(() => ob.subs.delete(onSync)); renderSync();
     desk.querySelector('#osm-hist')!.addEventListener('click', () => openHistory());
     // History: every confirmed change on this sheet (marks, reason notes, feedback edits, annotations), by every teacher; AI feedback is listed too.
@@ -1300,6 +1334,16 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-actions{display:flex;gap:8px;align-items:stretch}.osm-actions #osm-given{flex:1;justify-content:center;font-weight:600}.osm-btn.done{background:#1e8e4e!important;border-color:#1e8e4e!important;color:#fff!important}
+#osm-root .osm-rbtn{width:100%;height:auto;min-height:30px;margin-top:6px;display:flex;align-items:center;gap:7px;padding:5px 10px;border:1.5px solid #f2a900;background:#fff8e6;color:#8a5a00;border-radius:10px;font-size:.78rem;font-weight:600;text-align:left;font-family:inherit}
+#osm-root .osm-rbtn svg{width:14px;height:14px;flex:none}#osm-root .osm-rbtn em{font-style:normal;font-weight:400;opacity:.8;font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#osm-root .osm-rbtn:hover:not(:disabled){background:#ffefc2;border-color:#d99100;color:#6f4700}#osm-root .osm-rbtn.has{background:#f2a900;color:#fff;border-color:#f2a900}#osm-root .osm-rbtn.has em{opacity:.95}
+.osm-priv{font-size:.7rem;color:var(--osm-muted);margin-top:3px}.osm-reasonbox{margin-top:2px}
+.osm-micwrap{position:relative}.osm-micwrap textarea{padding-right:64px!important;box-sizing:border-box}
+.osm-mic,.osm-miclang{position:absolute;bottom:6px;border:0;cursor:pointer;font-family:inherit}
+.osm-mic{right:6px;width:28px;height:28px;border-radius:50%;background:#e8eefc;color:#2a4fb0;display:flex;align-items:center;justify-content:center;padding:0}.osm-mic:hover{background:#d4e0fb}
+.osm-mic.on{background:#e53935;color:#fff;animation:osmpulse 1.1s infinite}@keyframes osmpulse{0%{box-shadow:0 0 0 0 rgba(229,57,53,.5)}100%{box-shadow:0 0 0 9px rgba(229,57,53,0)}}
+.osm-miclang{right:38px;height:22px;margin-bottom:3px;padding:0 6px;border-radius:7px;background:transparent;color:var(--osm-muted);font-size:.66rem;font-weight:700;border:1px solid var(--osm-line)}
 .osm-q.na{opacity:.55;background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(150,160,180,.12) 8px 16px)}.osm-q.na .osm-in{background:transparent}
 .osm-rb.na{background:repeating-linear-gradient(135deg,transparent 0 4px,rgba(150,160,180,.25) 4px 8px);border-style:dashed}
 .osm-nab{font-size:.68rem!important;padding:0 7px!important;min-width:0!important}.osm-nab.on{background:#6b7280!important;color:#fff!important;border-color:#6b7280!important}
@@ -1369,7 +1413,7 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-flags{margin-top:10px;padding:8px 10px;border-radius:9px;background:#fff6e5;border:1px solid #f3d9a4;font-size:.76rem;color:#7a5200}.osm-flags ul{margin:4px 0 0 16px;padding:0}
 .osm-rbtn{width:28px;height:30px;flex:none;border:1px dashed var(--osm-line);background:transparent;color:var(--osm-muted);border-radius:9px;cursor:pointer;font-size:.85rem;padding:0}.osm-rbtn:hover:not(:disabled){border-color:var(--osm-accent);color:var(--osm-accent)}.osm-rbtn.has{background:var(--osm-accent);color:#fff;border-style:solid;border-color:var(--osm-accent)}
 #osm-root .osm-reason{width:100%;margin-top:6px;border:1px solid var(--osm-line);border-radius:9px;padding:6px 9px;font-family:inherit;font-size:.8rem;line-height:1.4;resize:vertical;background:var(--osm-bg);color:var(--osm-fg)}#osm-root .osm-reason:focus{outline:none;border-color:var(--osm-accent)}
-.osm-note-edit{position:absolute;z-index:4;min-width:180px;max-width:80%;background:rgba(255,255,255,.96);border:2px solid #2575fc;border-radius:6px;padding:2px 6px;font-family:'Poppins',system-ui,sans-serif;font-weight:600;line-height:1.2;resize:none;outline:none;box-shadow:0 4px 14px rgba(0,0,0,.3)}
+.osm-note-edit{position:absolute;z-index:4;max-height:110px;overflow-y:auto;box-sizing:border-box;background:rgba(255,255,255,.97);border:2px solid #2575fc;border-radius:8px;padding:4px 8px;font-family:'Poppins',system-ui,sans-serif;font-weight:600;line-height:1.3;resize:none;outline:none;box-shadow:0 4px 14px rgba(0,0,0,.3)}
 .osm-det{margin-top:5px;font-size:.8rem}.osm-det summary{cursor:pointer;color:var(--osm-muted)}.osm-qtext,.osm-ans,.osm-ci{margin-top:6px;line-height:1.5;white-space:pre-wrap}.osm-ci{color:var(--osm-muted);font-size:.8rem}
 .osm-foot{border-top:1px solid var(--osm-line);padding:10px 12px;display:flex;flex-direction:column;gap:7px}.osm-doneline{display:flex;flex-wrap:wrap;gap:3px}.osm-doneline .osm-chip{font-size:.7rem;padding:1px 7px;margin-right:0}.osm-nav{display:flex;justify-content:space-between;gap:8px}
 #osm-toasts{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:9950;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;font-family:'Poppins',system-ui,sans-serif}

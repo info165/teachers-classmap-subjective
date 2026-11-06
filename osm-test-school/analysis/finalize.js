@@ -65,6 +65,8 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
        finalFeedback=whyOut; steps=mkSteps(whyOut);
      } else {
        if(!f.whyWrong||!f.howToImprove){problems.push(`${tag}: marks lost, so whyWrong and howToImprove are required`);bad=true;}
+       // the teacher's private reason for cutting marks is the FIRST thing the feedback must reflect (never shown verbatim, never attributed to the teacher)
+       if(tnote&&!f.usedTeacherReason){problems.push(`${tag}: the teacher wrote a reason for cutting marks ("${tnote.slice(0,70)}") - whyWrong must be built on it first (in the student's voice: "you wrote…, so marks were lost because…"), then set usedTeacherReason:true`);bad=true;}
        if(!FM.includes(f.failureMode)){problems.push(`${tag}: failureMode must be one of ${FM.join(', ')}`);bad=true;}
        whyOut=(f.whyWrong||'').trim(); howOut=(f.howToImprove||'').trim();
        const text=`${f.headline||''} ${whyOut} ${howOut}`;
@@ -75,11 +77,11 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
        const st=(q.markingSteps||[]).map(x=>Number(x.marks)).filter(x=>!isNaN(x));
        if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match (teacher's mark kept; worth a look)`);
        failureMode=f.failureMode||'';
-       finalFeedback=[tnote?`Teacher's note: ${tnote}`:'', unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`About this answer: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
-       steps=mkSteps(`${tnote?`Teacher's note: ${tnote} `:''}${whyOut} ${howOut}`.trim());
+       finalFeedback=[unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`About this answer: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
+       steps=mkSteps(`${whyOut} ${howOut}`.trim());
      }
    } else {
-     if(counted&&tnote){ whyOut=`Teacher's note: ${tnote}`; finalFeedback=whyOut; if(Number.isInteger(f.page)) steps=[{pageIndex:f.page,stepPoint:[],marks:got,isMissing:false,comment:whyOut}]; }
+     if(counted&&tnote) warnings.push(`${tag}: full marks but the teacher left a private reason ("${tnote.slice(0,50)}") - not shown to the student`);
      if(f.whyWrong||f.howToImprove||f.headline||f.feedback) warnings.push(`${tag}: ${loser?'uncounted alternative':'full marks'} - the feedback you wrote is ignored (none is shown)`);
      if(loser) finalFeedback='Not attempted';
    }
@@ -89,7 +91,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      checkingInstructions:q.checkingInstructions||'',rubric:q.rubric||{step_marking:'',keywords:[]},options:q.options||null,
      finalFeedback,failureMode,failurePoint:lost?(f.failurePoint||''):'',prerequisiteConcept:lost?(f.prerequisiteConcept||''):'',
      studentOcrAnswer:'',answerPageIndices:page?[page-1]:[],answerPageIndex:page?page-1:-1,requiresReview:false,stepWiseEvaluation:steps,
-     whyLost:whyOut,howToImprove:howOut,teacherNote:tnote,headline:lost?(f.headline||'').trim():'',
+     whyLost:whyOut,howToImprove:howOut,teacherNote:'',headline:lost?(f.headline||'').trim():'',
      _runtimeOrLoser:loser,_unattemptedAlt:notChosen,_teacherNA:!!m.na,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
   });
   if(bad||reports.length!==man.questions.length) continue;
