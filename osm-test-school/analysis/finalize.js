@@ -42,7 +42,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const losersPre=new Set(s.losers||[]);
   man.questions.forEach((q,i)=>{
    const qn=q.questionNumber||String(i+1); const m=s.marks[qn]; const f=byIdx.get(i)||{}; const max=Number(q.marks)||0; const got=m.marks;
-   const isAlt=/alternative question \(or\)/i.test(q.checkingInstructions||''); const notChosen=!!(f.altNotChosen&&isAlt);
+   const isAlt=/alternative question \(or\)/i.test(q.checkingInstructions||''); const notChosen=!!(f.altNotChosen&&isAlt)||!!m.na;   // m.na = the teacher marked this question "not attempted" (any question type): uncounted, never a weakness
    const loser=losersPre.has(qn)||notChosen; const counted=!loser; const lost=counted&&got<max;
    const tag=`${R} Q${qn} (${fmtN(got)}/${fmtN(max)})`;
    if(!f.topic) {problems.push(`${tag}: topic missing`); bad=true;}
@@ -57,7 +57,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
    const FORBID=/\b(rubric|answer key|mark scheme|marking scheme|the key\b|per the key|key'?s answer|key (?:says|gives|lists|expects|adds|names|has|wants|is)|the scheme\b)/i;
    const mkSteps=(txt)=>Number.isInteger(f.page)?[{pageIndex:f.page,stepPoint:[],marks:0,isMissing:!!f.unattempted,comment:txt}]:[];
    if(lost){
-     const unatt=!!f.unattempted;
+     const unatt=!!f.unattempted||!!m.na;
      if(isMCQ && !unatt){
        // mechanical, no AI call: state the correct answer in the student's own language
        const ca=cleanAns(q.answer);
@@ -90,7 +90,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
      finalFeedback,failureMode,failurePoint:lost?(f.failurePoint||''):'',prerequisiteConcept:lost?(f.prerequisiteConcept||''):'',
      studentOcrAnswer:'',answerPageIndices:page?[page-1]:[],answerPageIndex:page?page-1:-1,requiresReview:false,stepWiseEvaluation:steps,
      whyLost:whyOut,howToImprove:howOut,teacherNote:tnote,headline:lost?(f.headline||'').trim():'',
-     _runtimeOrLoser:loser,_unattemptedAlt:notChosen,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
+     _runtimeOrLoser:loser,_unattemptedAlt:notChosen,_teacherNA:!!m.na,_orPartnerQNum:null,markedBy:m.by,_source:'teacher_marking'});
   });
   if(bad||reports.length!==man.questions.length) continue;
   const losers=computeOrLoserQNums(reports,man.questions); reports.forEach(r=>r._runtimeOrLoser=losers.has(r.questionNumber)||r._unattemptedAlt);

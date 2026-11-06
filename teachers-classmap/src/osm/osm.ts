@@ -82,6 +82,9 @@ const fmt1 = (n: number) => (Math.round(n * 100) / 100).toString();
 // one distinct colour per mark value (0, 0.5, 1 … ) so a glance at the panel shows what was given
 const PALETTE = ['#e53935', '#fb8c00', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#d81b60', '#6d4c41', '#00897b', '#7cb342', '#3949ab', '#f4511e', '#039be5', '#5e35b1', '#afb42b', '#546e7a', '#ec407a', '#26a69a', '#ffa000', '#5c6bc0', '#8d6e63'];
 const markColor = (v: number) => PALETTE[Math.round(v * 2) % PALETTE.length];
+// exactly three colours per question: green = full marks, yellow = in between, red = zero; not attempted = grey and blank
+const chipColor = (v: number, max: number) => max > 0 && v >= max ? '#2e9e4f' : v <= 0 ? '#e53935' : '#f2a900';
+const qColor = (m: any, max: number) => !m || m.na ? '#b8c0d0' : chipColor(Number(m.v) || 0, max);
 
 // ───────────────────────── firestore paths ─────────────────────────
 const paperRef = (owner: string, id: string) => B.db.collection('teachers').doc(owner).collection('assessmentHistory').doc(id);
@@ -517,14 +520,16 @@ function obLog(o: { by: string; owner: string; pid: string; suid: string }, ev: 
     const me = B.teacher(); const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     obEnqueue({ key: 'log:' + id, kind: 'log', by: o.by, owner: o.owner, pid: o.pid, suid: o.suid, at: Date.now(), data: { id, t: Date.now(), by: o.by, n: me?.name || '', ...ev } }, 800);
 }
-const obFmt = (v: any) => v === undefined || v === null ? 'not marked' : String(Math.round(Number(v) * 100) / 100);
+const obFmt = (v: any) => v === 'na' ? 'not attempted' : v === undefined || v === null ? 'not marked' : String(Math.round(Number(v) * 100) / 100);
 async function obExec(o: ObOp) {
     const P = { owner: o.owner, id: o.pid } as any as Paper; const d = o.data; const who = { by: o.by, owner: o.owner, pid: o.pid, suid: o.suid };
     if (o.kind === 'mark') {
-        const patch: any = { studentUid: o.suid, studentName: d.studentName || '', rollNumber: d.rollNumber || '', marks: { [d.qk]: d.entry }, updatedAt: Date.now() };
+        const patch: any = { studentUid: o.suid, studentName: d.studentName || '', rollNumber: d.rollNumber || '', marks: { [d.qk]: d.entry ? d.entry : B.FieldValue.delete() }, updatedAt: Date.now() };
         if (d.reopen) patch.done = { [o.by]: B.FieldValue.delete() };
         await stuRef(P, o.suid).set(patch, { merge: true });
-        if (d.prev !== d.entry.v) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: marks ${obFmt(d.prev)} → ${obFmt(d.entry.v)}` });
+        if (!d.entry) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: no longer “not attempted” (back to not marked)` });
+        else if (d.entry.na) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: marked as NOT ATTEMPTED (no marks, not counted as a weakness)` });
+        else if (d.prev !== d.entry.v) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: marks ${obFmt(d.prev)} → ${obFmt(d.entry.v)}` });
     } else if (o.kind === 'note') {
         await stuRef(P, o.suid).set({ notes: { [d.qk]: d.entry ? d.entry : B.FieldValue.delete() }, updatedAt: Date.now() }, { merge: true });
         obLog(who, { type: 'note', q: d.qLabel, text: `${d.qLabel}: ${d.entry ? (d.prev ? 'edited' : 'added') : 'removed'} the reason note` });
@@ -610,7 +615,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     // changes made on this device that the cloud has not confirmed yet are shown as they were left (never lost on refresh)
     obLoad(); void obDrain();
     const pendingInk: any = (() => { let r: any = null; ob.ops.forEach(o => { if (o.suid !== studentUid || o.pid !== paper.id || o.by !== me.uid) return;
-        if (o.kind === 'mark') (doc.marks ||= {})[o.data.qk] = o.data.entry;
+        if (o.kind === 'mark') { if (o.data.entry) (doc.marks ||= {})[o.data.qk] = o.data.entry; else if (doc.marks) delete doc.marks[o.data.qk]; }
         else if (o.kind === 'note') { if (o.data.entry) (doc.notes ||= {})[o.data.qk] = o.data.entry; else if (doc.notes) delete doc.notes[o.data.qk]; }
         else if (o.kind === 'fb' && fbReport) Object.entries(o.data.items).forEach(([qn, it]: any) => { const ix = fbReport!.findIndex(x => String(x.questionNumber) === qn); if (ix >= 0) fbReport![ix] = it.obj; });
         else if (o.kind === 'fbov' && fbParent) Object.assign(fbParent, o.data.fields);
@@ -649,7 +654,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <label class="vt colorlbl" title="Pen / note colour"><input type="color" id="t-color" value="${penColor}"><span>Colour</span></label>
             <div class="vw" title="Size of pen, notes and marks"><button data-w="2" class="vwb"><i style="height:2px"></i><span>Thin</span></button><button data-w="3" class="vwb on"><i style="height:4px"></i><span>Medium</span></button><button data-w="6" class="vwb"><i style="height:7px"></i><span>Thick</span></button></div>
             <i class="vsep"></i>
-            <button class="vt" id="t-undo" title="Undo the last mark on the page you worked on"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg><span>Undo</span></button>
+            <button class="vt" id="t-undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg><span>Undo</span></button>
             <button class="vt" id="t-theme" title="Dark / light panel">${theme === 'dark' ? '☀' : '☾'}<span>Theme</span></button>
           </div>
           <div class="osm-pages-wrap">
@@ -721,6 +726,34 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     const warnUnload = (e: BeforeUnloadEvent) => { if (alive && (inkDirty || ob.memOnly && obPendingCount())) { e.preventDefault(); e.returnValue = ''; } };
     window.addEventListener('beforeunload', warnUnload);
     window.addEventListener('pagehide', flushInk);
+    // undo (button and Ctrl/Cmd+Z): add / erase / edit, in the order they were done
+    const undoStack: any[] = [];
+    function pushStroke(i: number, st: InkStroke) { (inks[me.uid] ||= {}); const arr = (inks[me.uid][String(i)] ||= []); arr.push(st); undoStack.push({ t: 'add', p: i, s: st }); if (undoStack.length > 300) undoStack.shift(); }
+    function undoLast() {
+        const a = undoStack.pop(); if (!a) { toast('Nothing to undo.', 'info'); return; }
+        const arr = ((inks[me.uid] ||= {})[String(a.p)] ||= []);
+        if (a.t === 'add') { const ix = arr.indexOf(a.s); if (ix >= 0) arr.splice(ix, 1); }
+        else if (a.t === 'del') arr.splice(Math.min(a.ix, arr.length), 0, a.s);
+        else if (a.t === 'edit') { const ix = arr.indexOf(a.cur); if (ix >= 0) arr[ix] = a.prev; }
+        lastInkPage = a.p; renderInk(a.p); saveInk();
+    }
+    // eraser: the nearest one of YOUR marks within a generous reach is removed (no pin-pointing needed)
+    function nearestOwn(i: number, p: { x: number; y: number }, reach: number): number {
+        const arr = inks[me.uid]?.[String(i)] || []; let best = -1, bd = Infinity;
+        arr.forEach((st: any, si: number) => {
+            let d = Infinity;
+            if (st.k) { const z = +st.w || 40; d = Math.max(0, Math.hypot(p.x - (+st.x || 0), p.y - (+st.y || 0)) - z * .55); }
+            else if (st.t !== undefined) { const fs = +st.w || 24; const lines = String(st.t).split('\n'); const w = Math.max(...lines.map((l: string) => l.length)) * fs * .6, h = lines.length * fs * 1.2; const x0 = +st.x || 0, y0 = (+st.y || 0) - fs; const dx = Math.max(x0 - p.x, 0, p.x - (x0 + w)), dy = Math.max(y0 - p.y, 0, p.y - (y0 + h)); d = Math.hypot(dx, dy); }
+            else if (st.d) { const nums = String(st.d).match(/-?\d+(?:\.\d+)?/g)?.map(Number) || []; const pts: number[][] = []; for (let k = 0; k + 1 < nums.length; k += 2) pts.push([nums[k], nums[k + 1]]);
+                for (let k = 0; k < pts.length; k++) { const a = pts[k], b = pts[k + 1] || a; const vx = b[0] - a[0], vy = b[1] - a[1]; const l2 = vx * vx + vy * vy; const t = l2 ? Math.max(0, Math.min(1, ((p.x - a[0]) * vx + (p.y - a[1]) * vy) / l2)) : 0; d = Math.min(d, Math.hypot(p.x - (a[0] + t * vx), p.y - (a[1] + t * vy))); } d = Math.max(0, d - (+st.w || 3) / 2); }
+            if (d <= reach && d < bd) { bd = d; best = si; }
+        });
+        return best;
+    }
+    function eraseAt(i: number, p: { x: number; y: number }) {
+        const ix = nearestOwn(i, p, 30); if (ix < 0) return false;
+        const arr = inks[me.uid][String(i)]; const [st] = arr.splice(ix, 1); undoStack.push({ t: 'del', p: i, ix, s: st }); lastInkPage = i; renderInk(i); saveInk(); return true;
+    }
     // drawing
     pagesEl.addEventListener('pointerdown', (ev: PointerEvent) => {
         if (tool === 'none') return;
@@ -729,13 +762,15 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const vb = svg.viewBox.baseVal; const rect = svg.getBoundingClientRect();
         const pt = (e: PointerEvent) => ({ x: ((e.clientX - rect.left) / rect.width) * vb.width, y: ((e.clientY - rect.top) / rect.height) * vb.height });
         if (tool === 'erase') {
-            const hit = (ev.target as Element).closest('path[data-t],text[data-t]') as SVGElement | null;
-            if (hit && (hit as any).dataset.t === me.uid) { const arr = inks[me.uid]?.[String(i)]; if (arr) { arr.splice(Number((hit as any).dataset.s), 1); renderInk(i); saveInk(); } }
+            ev.preventDefault(); eraseAt(i, pt(ev)); svg.setPointerCapture(ev.pointerId);
+            const mvE = (e: PointerEvent) => { eraseAt(i, pt(e)); };   // keep the button down and sweep over marks to remove several
+            const upE = () => { svg.removeEventListener('pointermove', mvE); svg.removeEventListener('pointerup', upE); svg.removeEventListener('pointercancel', upE); };
+            svg.addEventListener('pointermove', mvE); svg.addEventListener('pointerup', upE); svg.addEventListener('pointercancel', upE);
             return;
         }
         if (tool === 'tick' || tool === 'cross') {
             ev.preventDefault(); const p = pt(ev); const z = penW === 2 ? 28 : penW === 3 ? 40 : 60;
-            (inks[me.uid] ||= {}); (inks[me.uid][String(i)] ||= []).push({ c: tool === 'tick' ? '#1e8e4e' : '#d93025', w: z, k: tool, x: Number(p.x.toFixed(1)), y: Number(p.y.toFixed(1)) });
+            pushStroke(i, { c: tool === 'tick' ? '#1e8e4e' : '#d93025', w: z, k: tool, x: Number(p.x.toFixed(1)), y: Number(p.y.toFixed(1)) });
             lastInkPage = i; renderInk(i); saveInk(); return;
         }
         if (tool === 'note') {
@@ -753,7 +788,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const mv = (e: PointerEvent) => { const p = pt(e); if (Math.hypot(p.x - last.x, p.y - last.y) < 1.2) return; d += ` L${p.x.toFixed(1)} ${p.y.toFixed(1)}`; last = p; live.setAttribute('d', d); };
         const up = () => {
             svg.removeEventListener('pointermove', mv); svg.removeEventListener('pointerup', up); svg.removeEventListener('pointercancel', up);
-            if (d.includes('L')) { (inks[me.uid] ||= {}); (inks[me.uid][String(i)] ||= []).push({ c: penColor, w: penW, d }); lastInkPage = i; saveInk(); }
+            if (d.includes('L')) { pushStroke(i, { c: penColor, w: penW, d }); lastInkPage = i; saveInk(); }
             renderInk(i);
         };
         svg.addEventListener('pointermove', mv); svg.addEventListener('pointerup', up); svg.addEventListener('pointercancel', up);
@@ -772,8 +807,9 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             if (done) return; done = true; const txt = ta.value.replace(/\s+$/, ''); ta.remove();
             if (!save) return;
             const arr = ((inks[me.uid] ||= {})[String(i)] ||= []);
-            if (!txt) { if (idx >= 0) arr.splice(idx, 1); }
-            else if (idx >= 0) arr[idx] = { ...arr[idx], t: txt }; else arr.push({ c: penColor, w: fs, t: txt, x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) });
+            if (!txt) { if (idx >= 0) { const [old] = arr.splice(idx, 1); undoStack.push({ t: 'del', p: i, ix: idx, s: old }); } }
+            else if (idx >= 0) { const prev = arr[idx]; const cur = { ...prev, t: txt }; arr[idx] = cur; undoStack.push({ t: 'edit', p: i, cur, prev }); }
+            else pushStroke(i, { c: penColor, w: fs, t: txt, x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) });
             lastInkPage = i; renderInk(i); saveInk();
         };
         ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(true); } else if (e.key === 'Escape') { e.preventDefault(); commit(false); } });
@@ -802,7 +838,13 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     TOOLS.forEach(k => el.querySelector('#t-' + k)!.addEventListener('click', () => setTool(tool === k ? 'none' : k)));
     (el.querySelector('#t-color') as HTMLInputElement).addEventListener('input', e => { penColor = (e.target as HTMLInputElement).value; });
     el.querySelectorAll('.vwb').forEach(b => b.addEventListener('click', () => { penW = Number((b as HTMLElement).dataset.w); el.querySelectorAll('.vwb').forEach(o => o.classList.toggle('on', o === b)); }));
-    el.querySelector('#t-undo')!.addEventListener('click', () => { if (lastInkPage < 0) return; const arr = inks[me.uid]?.[String(lastInkPage)]; if (arr?.length) { arr.pop(); renderInk(lastInkPage); saveInk(); } });
+    el.querySelector('#t-undo')!.addEventListener('click', () => undoLast());
+    const onKeyUndo = (e: KeyboardEvent) => {
+        if (!alive || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== 'z') return;
+        const t = e.target as HTMLElement | null; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;   // inside a text box, Ctrl+Z keeps undoing typing
+        e.preventDefault(); undoLast();
+    };
+    document.addEventListener('keydown', onKeyUndo); stopListeners.push(() => document.removeEventListener('keydown', onKeyUndo));
     const setZoom = (z: number) => { zoom = Math.max(40, Math.min(300, z)); (el.querySelector('#z-val') as HTMLElement).textContent = zoom + '%'; try { localStorage.setItem('osm-zoom', String(zoom)); } catch { /* */ } pageWrap.forEach((_, i) => sizePage(i)); };
     el.querySelector('#z-in')!.addEventListener('click', () => setZoom(zoom + 10));
     el.querySelector('#z-out')!.addEventListener('click', () => setZoom(zoom - 10));
@@ -843,6 +885,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     function applyMarkToReport(i: number, v: number) {
         if (!fbReport || !fbReport[i] || !fbParent) return;
         fbReport[i].marksAwarded = v;
+        { const na = !!doc.marks?.[qk(i)]?.na; if (na) { fbReport[i]._unattemptedAlt = true; fbReport[i]._teacherNA = true; } else if (fbReport[i]._teacherNA) { fbReport[i]._unattemptedAlt = false; delete fbReport[i]._teacherNA; } }
         const items = fbReport.map(r => ({ questionNumber: r.questionNumber, marksAwarded: r.marksAwarded || 0, maxMarksForQuestion: r.maxMarksForQuestion, checkingInstructions: r.checkingInstructions || '' }));
         let losers: Set<string>; try { losers = B.orLosers(items, paper.questions); } catch { losers = new Set(); }
         fbReport.forEach(r => { r._runtimeOrLoser = losers.has(r.questionNumber) || !!r._unattemptedAlt; });   // an alternative the student did not choose stays uncounted
@@ -1016,21 +1059,22 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-bar"><i style="width:${dt ? Math.min(100, sc.total / dt * 100) : 0}%"></i></div></div>
           ${hasAssign ? `<label class="osm-unlock"><input type="checkbox" id="osm-unlock" ${unlockAll ? 'checked' : ''}> Also let me edit other teachers' questions</label>` : ''}
           <div class="osm-qwrap">
-          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''}" data-i="${i}" style="--c:${m ? markColor(m.v) : '#b8c0d0'}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
+          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''} ${m?.na ? 'na' : ''}" data-i="${i}" style="--c:${qColor(m, qMax(q))}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
           <div class="osm-qs" id="osm-qs">
           ${paper.questions.map((q, i) => {
               const m = doc.marks?.[qk(i)]; const mine = editable(i); const loser = sc.losers.has(q.questionNumber || String(i + 1));
               const max = qMax(q);
-              return `<div class="osm-q ${mine ? '' : 'other'} ${m ? 'has' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${m ? markColor(m.v) : '#b8c0d0'}">
+              return `<div class="osm-q ${mine ? '' : 'other'} ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${qColor(m, max)}">
                 <div class="osm-q-row">
                   <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${hasAssign && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}</div>
                   <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
-                  <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m ? esc(Number(m.v)) : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
+                  <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m && !m.na ? esc(Number(m.v)) : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
                   <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
                   <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
+                  <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (greyed out, no marks, not counted as a weakness)">N/A</button>
                   <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Optional: write why marks were cut on this question" ${mine ? '' : 'disabled'}>✎</button>
                 </div>
-                ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${markColor(v)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
+                ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && !m.na && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${chipColor(v, max)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
                 <textarea class="osm-reason" data-i="${i}" rows="2" placeholder="Why were marks cut? (optional — the student will see this as your note)" ${mine ? '' : 'disabled'} style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}">${esc(doc.notes?.[qk(i)]?.t || '')}</textarea>
                 ${m && m.by !== me.uid ? `<div class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</div>` : ''}
                 ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
@@ -1075,6 +1119,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             else v = Math.max(0, (cur ?? 0) - 0.5);
             inp.value = String(v); queueSave(i, inp.value, inp, true);
         }));
+        sideEl.querySelectorAll<HTMLButtonElement>('.osm-nab').forEach(b => b.addEventListener('click', () => setNA(Number(b.dataset.i), !doc.marks?.[qk(Number(b.dataset.i))]?.na)));
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-cv').forEach(b => b.addEventListener('click', () => {
             const row = b.closest('.osm-q') as HTMLElement; const i = Number(row.dataset.i); const inp = row.querySelector('.osm-in') as HTMLInputElement;
             inp.value = b.dataset.v!; queueSave(i, inp.value, inp, true);
@@ -1102,7 +1147,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         let v = Math.round(parseFloat(raw.replace(',', '.')) * 2) / 2;   // marks are in half-mark steps
         if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
         if (document.activeElement !== inp) inp.value = String(v);
-        const prevV = doc.marks?.[qk(i)]?.v;
+        const prevV = doc.marks?.[qk(i)]?.na ? 'na' : doc.marks?.[qk(i)]?.v;
         const entry = { v, by: me.uid, n: me.name, t: Date.now() };
         (doc.marks ||= {})[qk(i)] = entry;
         // Editing a mark after "Marks Given" reopens this teacher's own done flag, so it can never be stale.
@@ -1112,6 +1157,16 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         if (fbReport) applyMarkToReport(i, v);   // already analysed: keep the report in step
         if (reopened) renderSideKeepFocus();
         refreshScoreOnly();
+    }
+    // "Not attempted": greyed out, no marks, never counted as a weakness. Typing a mark afterwards switches it off again.
+    function setNA(i: number, on: boolean) {
+        const prevM = doc.marks?.[qk(i)];
+        const entry: any = on ? { v: 0, na: true, by: me.uid, n: me.name, t: Date.now() } : null;
+        if (on) (doc.marks ||= {})[qk(i)] = entry; else if (doc.marks) delete doc.marks[qk(i)];
+        const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
+        obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevM?.na ? 'na' : prevM?.v, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, 0);
+        if (fbReport) applyMarkToReport(i, 0);
+        renderSide(); if (reopened) toast('You changed a mark, so “Marks Given” was reopened — click it again when finished.', 'info');
     }
     function renderSideKeepFocus() {
         const a = document.activeElement as HTMLInputElement | null; const i = a?.classList.contains('osm-in') ? a.dataset.i : null; const v = a?.value;
@@ -1124,7 +1179,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const n = sideEl.querySelector('.osm-score-num'); if (n) n.innerHTML = `${fmt1(sc.total)}<small> / ${dt || '—'}</small>`;
         const mk = sideEl.querySelector('#osm-marked'); if (mk) mk.textContent = `${sc.marked}/${sc.count}`;
         const bar = sideEl.querySelector('.osm-bar i') as HTMLElement | null; if (bar) bar.style.width = (dt ? Math.min(100, sc.total / dt * 100) : 0) + '%';
-        sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); r.style.setProperty('--c', doc.marks?.[qk(i)] ? markColor(doc.marks[qk(i)].v) : '#b8c0d0'); { const rb = sideEl.querySelector(`.osm-rb[data-i="${i}"]`) as HTMLElement | null; if (rb) { rb.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); rb.style.setProperty('--c', doc.marks?.[qk(i)] ? markColor(doc.marks[qk(i)].v) : '#b8c0d0'); } } { const cur = doc.marks?.[qk(i)]?.v; r.querySelectorAll<HTMLElement>('.osm-cv').forEach(c => c.classList.toggle('sel', cur !== undefined && Number(c.dataset.v) === cur)); } r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
+        sideEl.querySelectorAll<HTMLElement>('.osm-q').forEach(r => { const i = Number(r.dataset.i); const q = paper.questions[i]; r.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); r.classList.toggle('na', !!doc.marks?.[qk(i)]?.na); r.querySelector('.osm-nab')?.classList.toggle('on', !!doc.marks?.[qk(i)]?.na); { const ie = r.querySelector('.osm-in') as HTMLInputElement | null; if (ie && doc.marks?.[qk(i)]?.na) ie.value = ''; } r.style.setProperty('--c', qColor(doc.marks?.[qk(i)], qMax(q))); { const rb = sideEl.querySelector(`.osm-rb[data-i="${i}"]`) as HTMLElement | null; if (rb) { rb.classList.toggle('has', doc.marks?.[qk(i)] !== undefined); rb.classList.toggle('na', !!doc.marks?.[qk(i)]?.na); rb.style.setProperty('--c', qColor(doc.marks?.[qk(i)], qMax(q))); } } { const cur = doc.marks?.[qk(i)]?.na ? undefined : doc.marks?.[qk(i)]?.v; r.querySelectorAll<HTMLElement>('.osm-cv').forEach(c => c.classList.toggle('sel', cur !== undefined && Number(c.dataset.v) === cur)); } r.classList.toggle('loser', sc.losers.has(q.questionNumber || String(i + 1))); });
     }
     async function toggleDone() {
         await flushMarks();   // a mark typed a moment ago must count
@@ -1245,6 +1300,9 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-q.na{opacity:.55;background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(150,160,180,.12) 8px 16px)}.osm-q.na .osm-in{background:transparent}
+.osm-rb.na{background:repeating-linear-gradient(135deg,transparent 0 4px,rgba(150,160,180,.25) 4px 8px);border-style:dashed}
+.osm-nab{font-size:.68rem!important;padding:0 7px!important;min-width:0!important}.osm-nab.on{background:#6b7280!important;color:#fff!important;border-color:#6b7280!important}
 .osm-hist-back{position:fixed;inset:0;z-index:100001;background:rgba(15,20,40,.55);display:flex;align-items:center;justify-content:center;padding:18px}
 .osm-hist{background:#fff;color:#1b1f3b;border-radius:16px;width:min(720px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);font-family:Inter,Poppins,system-ui,sans-serif}
 .osm-hist-h{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #e6e9f4}.osm-hist-h b{font-size:16px}.osm-hist-h .osm-sub{flex:1;color:#6b7280}
