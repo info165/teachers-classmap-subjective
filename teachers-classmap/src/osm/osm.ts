@@ -1,3 +1,4 @@
+import { computeLearn, learnBlocks } from './learn';
 /**
  * Teacher Marking ("OSM") — teachers enter marks per question on the screen.
  *
@@ -639,7 +640,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <button class="osm-btn ghost" id="osm-close">${ICON.back}<span>Papers</span></button>
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
-            <span class="osm-inkstat" id="osm-ink-status" title="Every change is saved"></span>
+            <span class="osm-inkstat saved" id="osm-ready" style="display:none">✔ Ready for analysis</span><span class="osm-inkstat" id="osm-ink-status" title="Every change is saved"></span>
             <button class="osm-btn small" id="osm-hist" title="Everything changed on this sheet: who, what, which question, when">${ICON.msg}<span>History</span></button>
           </div>
         </div>
@@ -929,7 +930,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     const rbox = (cls: string, label: string, text: string) => text ? `<div class="osm-rbox ${cls}"><div class="osm-rlab">${label}</div><div>${esc(text).replace(/\n/g, '<br>')}</div></div>` : '';
     function fbView(qr: any) {
         const { why, how, note } = fbParts(qr); const full = (Number(qr.marksAwarded) || 0) >= (Number(qr.maxMarksForQuestion) || 0);
-        const wh = (why || how) ? `<div class="osm-rbox blue">${why ? `<div class="osm-rlab">ABOUT THIS ANSWER</div><div>${esc(why).replace(/\n/g, '<br>')}</div>` : ''}${how ? `<div class="osm-rlab" style="margin-top:${why ? 7 : 0}px">TO IMPROVE NEXT TIME</div><div>${esc(how).replace(/\n/g, '<br>')}</div>` : ''}</div>` : '';
+        const wh = (why || how) ? `<div class="osm-rbox blue">${why ? `<div class="osm-rlab">WHERE YOU LOST MARKS</div><div>${esc(why).replace(/\n/g, '<br>')}</div>` : ''}${how ? `<div class="osm-rlab" style="margin-top:${why ? 7 : 0}px">HOW TO IMPROVE</div><div>${esc(how).replace(/\n/g, '<br>')}</div>` : ''}</div>` : '';
         return rbox('amber', "TEACHER'S NOTE", note) + wh + ((!note && !why && !how && !full) ? '<div class="osm-muted" style="font-size:.8rem">No feedback written yet.</div>' : '');
     }
     function fbCard(qr: any, i: number) {
@@ -941,16 +942,17 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           ${loser ? '' : `<div class="osm-rq-view" data-i="${i}">${fbView(qr)}</div>
             <div class="osm-rq-edit" data-i="${i}" style="display:none">
               <label>Teacher's note <small>(optional)</small></label><textarea class="osm-fbta" data-f="note" data-i="${i}" rows="2">${esc(note)}</textarea>
-              <label>About this answer</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
-              <label>To improve next time</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
+              <label>Where you lost marks</label><textarea class="osm-fbta" data-f="why" data-i="${i}" rows="4">${esc(why)}</textarea>
+              <label>How to improve</label><textarea class="osm-fbta" data-f="how" data-i="${i}" rows="3">${esc(how)}</textarea></div>
             <div class="osm-rq-foot"><button class="osm-btn tiny osm-fbedit" data-i="${i}">${editBtn(!!(why || how || note))}</button>${q.answer ? `<details class="osm-sol"><summary>Answer key</summary><div class="osm-keymath">${B.fmtMath(esc(q.answer))}</div></details>` : ''}</div>`}
         </div>`;
     }
+    let curL = computeLearn([]);   // topic-by-topic results, recomputed from the marks every time the Feedback tab is drawn
     function ovView(k: string, text: string) {
         const items = text.split('\n').map(x => x.trim()).filter(Boolean);
         if (!items.length) return '<span class="osm-muted">—</span>';
         if (k === 'summary') return esc(text).replace(/\n/g, '<br>');
-        if (k === 'steps') return items.map((t, n) => `<div class="osm-step"><b>${n + 1}</b>${esc(t)}</div>`).join('');
+        if (k === 'steps') return learnBlocks(curL, { fs: 12, steps: items }).filter(b => b.kind === 'step').map(b => b.html).join('');
         return items.map(t => `<span class="osm-pill ${k === 'strengths' ? 'g' : 'a'}">${esc(t.replace(/^\[([^\]]+)\].*$/, '$1'))}</span>`).join('');
     }
     function ovBlock(k: string, label: string, text: string, list: boolean) {
@@ -968,6 +970,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const win = an.marksToWinBack ?? Math.max(0, dt - score); const gr = pctv >= 90 ? 'A+' : pctv >= 80 ? 'A' : pctv >= 70 ? 'B+' : pctv >= 60 ? 'B' : pctv >= 50 ? 'C' : 'D';
         const col = (p: number) => p >= 80 ? '#1e8e4e' : p >= 50 ? '#d17a0a' : '#d12f3a';
         const nLost = fbReport.filter(r => !r._runtimeOrLoser && (Number(r.marksAwarded) || 0) < (Number(r.maxMarksForQuestion) || 0)).length; const nAll = fbReport.filter(r => !r._runtimeOrLoser).length;
+        curL = computeLearn(fbReport);
         const toneOf = (r: any) => r._runtimeOrLoser ? 'gray' : (Number(r.marksAwarded) || 0) >= (Number(r.maxMarksForQuestion) || 0) ? 'full' : (Number(r.marksAwarded) || 0) > 0 ? 'part' : 'zero';
         sideEl.innerHTML = `${tabsHtml()}
           <div class="osm-fbhead">
@@ -981,11 +984,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-qmap" title="Jump to a question">${fbReport.map((r, i) => `<button class="osm-qm ${toneOf(r)}" data-i="${i}">${esc(r.questionNumber)}</button>`).join('')}</div>
             ${fbReport.map((qr, i) => fbCard(qr, i)).join('')}
             <div class="osm-ov"><div class="osm-ovtitle">Learning summary</div>
-              <div class="osm-win"><b>${fmt1(win)}</b><span>marks to win back out of ${dt || '—'}</span></div>
               ${ovBlock('summary', 'Summary', of.summary || '', false)}
-              <div class="osm-ovb"><div class="osm-ovh"><b>Concept mastery</b><span class="osm-muted">weakest first · worked out from the marks</span></div>${bars(cm.map(c => ({ label: c.topic, val: `${c.pct}%`, pct: Number(c.pct) || 0, col: col(Number(c.pct) || 0) })))}</div>
-              ${ovBlock('strengths', 'What you did well', linesOf(of.strengths), true)}
-              ${ovBlock('areas', 'Where to improve', linesOf(of.areasForImprovement), true)}
+              ${learnBlocks(curL, { fs: 12 }).filter(x => x.kind !== 'summary').map(x => x.html).join('')}
               ${ovBlock('steps', 'Your next steps', linesOf(of.nextSteps), true)}
               ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this)</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}
             </div>
@@ -1058,6 +1058,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     function renderSideInner() {
         const sc = scoreFor(paper, doc.marks);
         const st = studentState(paper, doc, meta, teachers);
+        { const rp = desk.querySelector('#osm-ready') as HTMLElement | null; if (rp) rp.style.display = st.ready ? '' : 'none'; }
         const iAmDone = !!doc.done?.[me.uid];
         const dt = declaredTotal(paper);
         sideEl.innerHTML = `${tabsHtml()}
@@ -1081,17 +1082,18 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
                   <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (greyed out, no marks, not counted as a weakness)">N/A</button>
                 </div>
                 ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && !m.na && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${chipColor(v, max)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
-                <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Private note for the AI feedback: why marks were cut here. Students never see it." ${mine ? '' : 'disabled'}>${ICON.pen}<span>Why were marks cut?</span><em>${doc.notes?.[qk(i)]?.t ? esc(doc.notes[qk(i)].t.length > 40 ? doc.notes[qk(i)].t.slice(0, 40) + '…' : doc.notes[qk(i)].t) : 'private · guides the AI feedback'}</em></button>
-                <div class="osm-reasonbox" style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}"><textarea class="osm-reason" data-i="${i}" rows="3" placeholder="Write or speak why marks were cut on this question…" ${mine ? '' : 'disabled'}>${esc(doc.notes?.[qk(i)]?.t || '')}</textarea><div class="osm-priv">🔒 Private to teachers. The student never sees this; the AI builds its feedback on it first.</div></div>
-                ${m && m.by !== me.uid ? `<div class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</div>` : ''}
-                ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
+                <div class="osm-qfoot">
                 <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
+                ${m && m.by !== me.uid ? `<span class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</span>` : ''}
+                <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Write or speak why marks were cut on this question" ${mine ? '' : 'disabled'}>${ICON.pen}<span>Why marks cut?</span></button>
+                </div>
+                <div class="osm-reasonbox" style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}"><textarea class="osm-reason" data-i="${i}" rows="3" placeholder="Why were marks cut on this question? Write or speak…" ${mine ? '' : 'disabled'}>${esc(doc.notes?.[qk(i)]?.t || '')}</textarea></div>
+                ${loser ? '<div class="osm-by">alternative not counted (other option scored higher)</div>' : ''}
               </div>`;
           }).join('')}
           </div></div>
           <div class="osm-foot">
             <div class="osm-doneline">${paper.questions.length ? teachers.map(t => `<span class="osm-chip ${doc.done?.[t.uid] ? 'on' : ''}">${esc(shortName(t.name, teachers))}${doc.done?.[t.uid] ? ' ✓' : ''}</span>`).join('') : ''}</div>
-            ${st.ready ? '<div class="osm-banner ok small">✔ Ready for analysis</div>' : ''}
             <div class="osm-actions"><button class="osm-btn ${iAmDone ? 'done' : 'primary'}" id="osm-given" title="${iAmDone ? 'Click to reopen and edit' : 'Click when you have finished marking this sheet'}">${iAmDone ? '✓ Completed' : 'Completed'}</button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div>
           </div>`;
         statusEl = sideEl.querySelector('#osm-save');
@@ -1334,6 +1336,9 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-qfoot{display:flex;align-items:flex-start;gap:8px;margin-top:3px}.osm-qfoot .osm-det{flex:1;min-width:0;margin-top:0;font-size:.74rem}.osm-qfoot .osm-by{margin:2px 0 0;white-space:nowrap}
+#osm-root .osm-rbtn{width:auto;min-height:0;margin:0;padding:2px 9px;font-size:.7rem;border-width:1px;border-radius:99px;flex:none}#osm-root .osm-rbtn svg{width:11px;height:11px}
+.osm-q{padding:4px 8px 5px!important;margin:4px 0!important}.osm-chips{margin-top:3px!important}.osm-foot{padding:6px 10px!important;gap:4px!important}.osm-doneline{margin-bottom:0}
 .osm-actions{display:flex;gap:8px;align-items:stretch}.osm-actions #osm-given{flex:1;justify-content:center;font-weight:600}.osm-btn.done{background:#1e8e4e!important;border-color:#1e8e4e!important;color:#fff!important}
 #osm-root .osm-rbtn{width:100%;height:auto;min-height:30px;margin-top:6px;display:flex;align-items:center;gap:7px;padding:5px 10px;border:1.5px solid #f2a900;background:#fff8e6;color:#8a5a00;border-radius:10px;font-size:.78rem;font-weight:600;text-align:left;font-family:inherit}
 #osm-root .osm-rbtn svg{width:14px;height:14px;flex:none}#osm-root .osm-rbtn em{font-style:normal;font-weight:400;opacity:.8;font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

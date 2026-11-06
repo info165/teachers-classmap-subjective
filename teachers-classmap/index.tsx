@@ -6,6 +6,7 @@ import { GoogleGenAI, GenerateContentResponse, Part, Type, Modality } from "@goo
 import { marked } from 'marked';
 import type firebase from 'firebase/compat/app';
 import { initOsm, closeOsm, renderOsmExamRows, osmTitleExists } from './src/osm/osm';
+import { computeLearn, learnBlocks, learnNames } from './src/osm/learn';
 
 
 // --- START OF CONFIGURABLE API ENDPOINTS ---
@@ -24673,6 +24674,7 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
         const grade = pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 70 ? 'B+' : pct >= 60 ? 'B' : pct >= 50 ? 'C' : 'D';
         const gcol = pct >= 80 ? green : pct >= 50 ? amber : red;
         const msg = pct >= 80 ? [`Excellent work, ${first}.`, 'Keep it up. A few points to polish are below.'] : pct >= 60 ? [`Good effort, ${first}.`, 'You have a solid base. Let us strengthen the areas below.'] : [`Nice try, ${first}.`, 'You have a base to build on. Let us strengthen the areas below.'];
+        const LRN = computeLearn(all); const LNM = learnNames(LRN);
         const nFull = qs.filter(q => q.marksAwarded >= q.maxMarksForQuestion).length, nZero = qs.filter(q => !(q.marksAwarded > 0)).length, nPart = qs.length - nFull - nZero;
         const ff = 'font-family:Poppins,Arial,sans-serif;color:#1b1f3b;box-sizing:border-box;';
         // the name the school shows publicly (e.g. "The Newtown School"), not the internal matching name
@@ -24686,7 +24688,7 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
         const hOf = (html: string, w: number) => { const d = document.createElement('div'); d.style.cssText = `width:${w}px;display:flow-root;`; d.innerHTML = html; host.appendChild(d); const h = d.getBoundingClientRect().height; host.removeChild(d); return Math.ceil(h); };
         const pack = (blocks: string[], w: number, avail: number, firstAvail?: number): string[][] => { const pages: string[][] = [[]]; let used = 0, cap = firstAvail ?? avail; for (const b of blocks) { const h = hOf(b, w); if (used + h > cap && pages[pages.length - 1].length) { pages.push([]); used = 0; cap = avail; } pages[pages.length - 1].push(b); used += h; } return pages; };
         const chip = (t: string, col: string) => `<span style="display:inline-block;margin:2px 5px 2px 0;padding:4px 10px;border-radius:99px;background:#fff;border:1px solid ${col};font-size:10px;font-weight:600;">${_escH(t.replace(/^\[([^\]]+)\].*$/, '$1'))}</span>`;
-        const chipList = (arr: any[], max: number, col: string) => { const a = (Array.isArray(arr) ? arr : []).map(x => String(typeof x === 'string' ? x : x?.text || '')); return a.slice(0, max).map(t => chip(t, col)).join('') + (a.length > max ? chip(`+${a.length - max} more (full list on the last page)`, col) : '') || '<span style="color:#7f8c8d;font-size:10px;">—</span>'; };
+        const chipList = (arr: any[], max: number, col: string) => { const a = (Array.isArray(arr) ? arr : []).map(x => String(typeof x === 'string' ? x : x?.text || '')); return a.slice(0, max).map(t => chip(t, col)).join('') + (a.length > max ? chip(`+${a.length - max} more (see the learning summary)`, col) : '') || '<span style="color:#7f8c8d;font-size:10px;">—</span>'; };
         const specs: { w: number; h: number; inner: string; landscape: boolean }[] = [];
         // ── 1) score page (portrait) ──
         const C = 2 * Math.PI * 46;
@@ -24701,15 +24703,15 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
             <div style="flex:1;"><div style="font-size:16px;font-weight:700;">${_escH(msg[0])}</div><div style="font-size:10px;color:#6b7280;margin-top:3px;">${_escH(msg[1])}</div>
               <div style="margin-top:9px;font-size:9.5px;font-weight:600;"><span style="background:#e8f6ee;color:${green};padding:4px 9px;border-radius:99px;margin-right:4px;">● ${nFull} full marks</span><span style="background:#fff3e0;color:${amber};padding:4px 9px;border-radius:99px;margin-right:4px;">● ${nPart} partial</span><span style="background:#fdeaec;color:${red};padding:4px 9px;border-radius:99px;">● ${nZero} to work on</span></div></div></div>`;
         const twoBoxes = (max: number) => `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-            <div style="border:1.5px solid ${green};background:#eaf7ef;border-radius:14px;padding:10px 13px;"><div style="font-size:8px;letter-spacing:1.4px;font-weight:700;color:${green};margin-bottom:5px;">WHAT YOU DID WELL</div>${chipList(of.strengths, max, green)}</div>
-            <div style="border:1.5px solid ${amber};background:#fff4e2;border-radius:14px;padding:10px 13px;"><div style="font-size:8px;letter-spacing:1.4px;font-weight:700;color:${amber};margin-bottom:5px;">WHERE TO IMPROVE</div>${chipList(of.areasForImprovement, max, amber)}</div></div>`;
+            <div style="border:1.5px solid ${green};background:#eaf7ef;border-radius:14px;padding:10px 13px;"><div style="font-size:8px;letter-spacing:1.4px;font-weight:700;color:${green};margin-bottom:5px;">WHAT YOU DID WELL</div>${chipList(LNM.strengths, max, green)}</div>
+            <div style="border:1.5px solid ${amber};background:#fff4e2;border-radius:14px;padding:10px 13px;"><div style="font-size:8px;letter-spacing:1.4px;font-weight:700;color:${amber};margin-bottom:5px;">WHERE TO IMPROVE</div>${chipList(LNM.improve, max, amber)}</div></div>`;
         const cell = (q: any) => { const g = Number(q.marksAwarded) || 0, m = Number(q.maxMarksForQuestion) || 0; return `<div style="border:1.5px solid ${colOf(g, m)};background:${bgOf(g, m)};border-radius:9px;padding:4px 8px;"><div style="display:flex;justify-content:space-between;font-weight:700;font-size:10px;"><span><span style="color:${colOf(g, m)}">●</span> Q${_escH(q.questionNumber)}</span><span style="color:${colOf(g, m)}">${f1(g)}/${f1(m)}</span></div><div style="height:3px;background:rgba(255,255,255,.85);border-radius:3px;margin-top:3px;overflow:hidden;"><i style="display:block;height:100%;width:${m ? Math.min(100, g / m * 100) : 0}%;background:${colOf(g, m)};"></i></div></div>`; };
         const rows: string[] = []; for (let k = 0; k < qs.length; k += 5) rows.push(`<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-bottom:7px;">${qs.slice(k, k + 5).map(cell).join('')}</div>`);
         const bdHead = `<div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 7px;"><div style="font-size:9px;letter-spacing:1.4px;font-weight:700;color:#1a1f6e;">MARKS BREAKDOWN</div><div style="font-size:8.5px;color:#6b7280;"><span style="color:${green}">●</span> Full marks &nbsp;<span style="color:${amber}">●</span> Partial &nbsp;<span style="color:${red}">●</span> No marks</div></div>`;
         const totalBar = `<div style="margin-top:6px;background:#1a1f6e;color:#fff;border-radius:14px;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;"><div style="font-weight:700;letter-spacing:1px;font-size:10px;">TOTAL SCORE</div><div><span style="font-size:22px;font-weight:700;">${f1(score)}</span><span style="opacity:.7;font-size:12px;"> / ${f1(dt)}</span> <b style="margin-left:10px;font-size:13px;">${pct}%</b></div></div>`;
         const contBar = (label: string) => `<div style="background:#37474f;color:#fff;border-radius:10px;padding:8px 16px;display:flex;justify-content:space-between;font-size:10px;margin-bottom:12px;"><b>${label}</b><span style="opacity:.85;">${_escH(nm.toUpperCase())} &nbsp;${_escH(report.rollNumber || '')}</span></div>`;
         { const bodyW = PW - 2 * PAD; const headH = hOf(p1Head, PW);
-          const first1 = [scoreCard, twoBoxes(6), bdHead + (rows[0] || ''), ...rows.slice(1), totalBar];
+          const first1 = [scoreCard, twoBoxes(12), bdHead + (rows[0] || ''), ...rows.slice(1), totalBar];
           const pk = pack(first1, bodyW, PH - PAD - FOOT - 40, PH - headH - FOOT - 16);
           pk.forEach((blocks, n) => specs.push({ w: PW, h: PH, landscape: false, inner: n === 0 ? `${p1Head}<div style="padding:0 ${PAD}px;">${blocks.join('')}</div>` : `<div style="padding:${PAD}px;">${contBar('ASSESSMENT REPORT (continued)')}${blocks.join('')}</div>` })); }
         // ── 2) answer-sheet pages (landscape): sheet on the left, question cards on the right ──
@@ -24749,7 +24751,7 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
             const why = q.whyLost || '', how = q.howToImprove || ''; const legacy = !why && !how ? String(q.finalFeedback || '') : '';
             return `<div style="border:1px solid #e3e6f3;border-radius:10px;padding:8px 10px;margin-bottom:7px;background:#fff;">${head}${note}
               ${box('SOLUTION', String(q.answer || ''), '#efeafc', '#5b3fa0', solHtml.get(q))}
-              ${(why || how) ? `<div style="background:#e8f0ff;border-radius:8px;padding:6px 9px;margin-top:6px;">${why ? `<div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;">ABOUT THIS ANSWER</div><div style="font-size:10px;line-height:1.4;margin-bottom:${how ? 4 : 0}px;">${_escH(why)}</div>` : ''}${how ? `<div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;">TO IMPROVE NEXT TIME</div><div style="font-size:10px;line-height:1.4;">${_escH(how)}</div>` : ''}</div>` : box('FEEDBACK', legacy, '#e8f0ff', '#2a4fb0')}</div>`;
+              ${(why || how) ? `<div style="background:#e8f0ff;border-radius:8px;padding:6px 9px;margin-top:6px;">${why ? `<div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;">WHERE YOU LOST MARKS</div><div style="font-size:10px;line-height:1.4;margin-bottom:${how ? 4 : 0}px;">${_escH(why)}</div>` : ''}${how ? `<div style="font-size:7px;letter-spacing:1.1px;font-weight:700;color:#2a4fb0;">HOW TO IMPROVE</div><div style="font-size:10px;line-height:1.4;">${_escH(how)}</div>` : ''}</div>` : box('FEEDBACK', legacy, '#e8f0ff', '#2a4fb0')}</div>`;
         };
         const IMGW = 430, GAP = 16, sheetHead = (pg: number, cont: boolean) => `<div style="background:#37474f;color:#fff;border-radius:10px;padding:8px 16px;display:flex;justify-content:space-between;font-size:10.5px;"><b>ANSWER SHEET — PAGE ${pg + 1}${cont ? ' (continued)' : ''}</b><span style="opacity:.85;">${_escH(nm.toUpperCase())} &nbsp;${_escH(report.rollNumber || '')}</span></div>`;
         for (const pg of need) {
@@ -24765,16 +24767,9 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
         const bar = (label: string, val: string, p: number, col: string) => `<div style="display:flex;align-items:center;gap:10px;margin:5px 0;font-size:10.5px;"><div style="width:42%;font-weight:600;">${_escH(label)}</div><div style="flex:1;height:8px;background:#eef0f7;border-radius:6px;overflow:hidden;"><i style="display:block;height:100%;width:${Math.max(0, Math.min(100, p))}%;background:${col};border-radius:6px;"></i></div><div style="width:60px;text-align:right;font-weight:700;color:${col};">${_escH(val)}</div></div>`;
         const sect = (t: string, sub2: string) => `<div style="margin-top:12px;font-size:10px;letter-spacing:1px;font-weight:700;color:#1a1f6e;">${t} <span style="font-weight:400;color:#7f8c8d;letter-spacing:0;">${sub2}</span></div>`;
         const cm: any[] = an.conceptMastery || of.conceptMastery || []; const lb: any[] = an.lostByMode || []; const tp: any[] = (report.studentIntelligence?.questionTypePerformance) || [];
-        const win = an.marksToWinBack ?? Math.max(0, dt - score); const steps: any[] = Array.isArray(of.nextSteps) ? of.nextSteps : [];
-        const lbTot = lb.reduce((t: number, x: any) => t + (Number(x.marks) || 0), 0) || 1;
-        const sb: string[] = [];
-        sb.push(`<div style="background:#efeafc;border:1px solid #d9d0f5;border-radius:14px;padding:12px 18px;"><span style="font-size:30px;font-weight:700;color:#5b3fa0;">${f1(win)}</span> <span style="font-size:12px;font-weight:600;">marks to win back out of ${f1(dt)}</span><div style="font-size:9.5px;color:#6b7280;margin-top:2px;">Answers that already earned part of the marks are the quickest to fix.</div></div>`);
-        if (of.summary) sb.push(`<div style="margin-top:10px;font-size:10.5px;line-height:1.55;background:#eaf7ef;border-radius:10px;padding:9px 13px;color:#17613a;">${_escH(of.summary)}</div>`);
-        if (cm.length) { const cc = (c: any) => bar(c.topic, `${c.pct}%`, Number(c.pct) || 0, c.pct >= 80 ? green : c.pct >= 50 ? amber : red); sb.push(sect('CONCEPT MASTERY', 'weakest first') + cc(cm[0])); cm.slice(1).forEach(c => sb.push(cc(c))); }
+        const steps: any[] = Array.isArray(of.nextSteps) ? of.nextSteps : [];
+        const sb: string[] = learnBlocks(LRN, { fs: 10.5, steps, summary: of.summary || '' }).map(x => x.html);
         if (tp.length) { const tt = (t: any) => bar(String(t.type || '').charAt(0) + String(t.type || '').slice(1).toLowerCase(), `${f1(t.scored)}/${f1(t.max)}`, t.max ? t.scored / t.max * 100 : 0, t.max && t.scored / t.max >= .8 ? green : amber); sb.push(sect('SCORE BY QUESTION TYPE', '') + tt(tp[0])); tp.slice(1).forEach(t => sb.push(tt(t))); }
-        const stepHtml = (t: any, n: number) => `<div style="display:flex;gap:9px;align-items:center;border:1px solid #e3e6f3;border-radius:99px;padding:6px 13px;margin:5px 0;font-size:10.5px;"><span style="width:20px;height:20px;border-radius:50%;background:#e1f4e8;color:${green};font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;font-size:9.5px;">${n + 1}</span>${_escH(typeof t === 'string' ? t : t?.text || '')}</div>`;
-        if (steps.length) { sb.push(sect('YOUR NEXT STEPS', '') + stepHtml(steps[0], 0)); steps.slice(1).forEach((t, n) => sb.push(stepHtml(t, n + 1))); }
-        sb.push(`<div style="margin-top:14px;">${twoBoxes(999)}</div>`);   // "What you did well / Where to improve" again at the end
         { const pk = pack(sb, PW - 2 * PAD, PH - PAD - FOOT - 44);
           pk.forEach((blocks, n) => specs.push({ w: PW, h: PH, landscape: false, inner: `<div style="padding:${PAD}px;">${contBar(n === 0 ? 'YOUR LEARNING SUMMARY' : 'YOUR LEARNING SUMMARY (continued)')}${blocks.join('')}</div>` })); }
         // ── render every page as one A4 page (no slicing, so nothing is cut) ──

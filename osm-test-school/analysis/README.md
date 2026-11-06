@@ -41,3 +41,10 @@ Each lost-mark question needs `failureMode`: NEVER_KNEW (no idea / blank), KNEW_
 - **Student learning summary** keeps: summary, concept mastery, what you did well, where to improve, next steps. "Where the marks went (by mistake type)" is removed from the student PDF and the teacher Feedback panel.
 - **Sampling audit (for now, Claude/Sonnet; later Gemini):** after generating, build review-packet-<roll>.md and have an independent pass check each lost-mark line against the real answer + marks + sheet image, and flag any over-attribution, wrong fact, or key/rubric wording. Fix before publish.
 - **Workflow:** user says "class X Science is done" → run `export.js "<School>" <class> <section> <subject>` to pick up every student all teachers have finished → generate feedback → finalize → audit sample → publish.
+
+## Learning summary rules — 2026-11-06
+- The learning summary is TOPIC-BY-TOPIC. `concept` in the feedback JSON = the BROAD topic (e.g. "Motion", "Tissues"); `topic` = the small idea inside it (e.g. "Equations of motion"). Both are required on every question and must be used consistently (a small idea always sits under the same broad topic).
+- The student sees, in order: summary line, topic-by-topic bars (questions fully right / partly / missed, strongest first), what they did well (topics >= 80%), where to improve (weakest topic first, listing the weak small ideas with "k of n"), and a few next steps. There is NO "marks to win back" card.
+- nextSteps: at most 5, each `{concept: <BROAD topic that is below 80%>, step: <one short action, max 120 characters>}`; the three weakest topics below 70% must each have one.
+- All counts are computed from the teachers' marks (unchosen alternatives and "not attempted" questions excluded); the teacher UI and the PDF recompute them live with src/osm/learn.ts.
+- Student-facing labels: "Where you lost marks" and "How to improve".

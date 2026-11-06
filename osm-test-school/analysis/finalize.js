@@ -77,7 +77,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
        const st=(q.markingSteps||[]).map(x=>Number(x.marks)).filter(x=>!isNaN(x));
        if(st.length&&Math.abs(st.reduce((a,b)=>a+b,0)-max)<1e-9&&!subsetSum(st,max-got)) warnings.push(`${tag}: lost ${fmtN(max-got)} but rubric steps are [${st.join(', ')}] - deduction does not match (teacher's mark kept; worth a look)`);
        failureMode=f.failureMode||'';
-       finalFeedback=[unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`About this answer: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
+       finalFeedback=[unatt?'Not attempted.':(f.headline||'').trim(), whyOut?`Where you lost marks: ${whyOut}`:'', howOut?`How to improve: ${howOut}`:''].filter(Boolean).join('\n\n');
        steps=mkSteps(`${whyOut} ${howOut}`.trim());
      }
    } else {
@@ -106,17 +106,20 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const byConcept={}; counted.forEach(r=>{const c=r.concept; (byConcept[c]??={topic:c,scored:0,max:0,qs:[]}); byConcept[c].scored+=r.marksAwarded; byConcept[c].max+=r.maxMarksForQuestion; byConcept[c].qs.push(r.questionNumber);});
   const conceptMastery=Object.values(byConcept).map(t=>({topic:t.topic,scored:+fmtN(t.scored),max:+fmtN(t.max),pct:t.max?Math.round(t.scored/t.max*100):0,level:level(t.max?t.scored/t.max*100:0),questions:t.qs})).sort((a,b)=>a.pct-b.pct||b.max-a.max);
   const mastery=Object.values(byTopic).map(t=>({topic:t.topic,scored:+fmtN(t.scored),max:+fmtN(t.max),pct:t.max?Math.round(t.scored/t.max*100):0,level:level(t.max?t.scored/t.max*100:0),questions:t.qs})).sort((a,b)=>a.pct-b.pct||b.max-a.max);
-  const strengthC=mastery.filter(c=>c.pct>=85).sort((a,b)=>b.max-a.max).slice(0,8).map(c=>c.topic);   // top concepts only
-  const weakC=mastery.filter(c=>c.pct<70).sort((a,b)=>(b.max-b.scored)-(a.max-a.scored)).map(c=>c.topic);
+  // BROAD topics (the `concept` field, e.g. Motion) are what the student reads; the small ideas inside (the `topic` field) are listed under them
+  const strengthC=conceptMastery.filter(c=>c.pct>=80).sort((a,b)=>b.pct-a.pct).map(c=>c.topic);
+  const weakC=conceptMastery.filter(c=>c.pct<80).sort((a,b)=>a.pct-b.pct||(b.max-b.scored)-(a.max-a.scored)).map(c=>c.topic);
   // next steps may only name weak concepts; the biggest weaknesses must each have one
   const steps=Array.isArray(fb.nextSteps)?fb.nextSteps:[];
   steps.forEach(x=>{ if(!x||!x.concept||!x.step) problems.push(`${R}: every nextSteps item needs {concept, step}`); else if(!weakC.includes(x.concept)) problems.push(`${R}: nextSteps names "${x.concept}" which is not a weak concept (weak: ${weakC.join('; ')||'none'})`); });
-  weakC.slice(0,5).forEach(c=>{ if(!steps.some(x=>x&&x.concept===c)) problems.push(`${R}: no next step for weak concept "${c}"`); });
+  if(steps.length>5) problems.push(`${R}: at most 5 nextSteps (keep them short and few)`);
+  steps.forEach(x=>{ if(x&&x.step&&String(x.step).length>120) problems.push(`${R}: nextSteps for "${x.concept}" is too long (max 120 characters, one short action)`); });
+  weakC.filter(c=>{const m=conceptMastery.find(z=>z.topic===c);return m&&m.pct<70;}).slice(0,3).forEach(c=>{ if(!steps.some(x=>x&&x.concept===c)) problems.push(`${R}: no next step for weak topic "${c}"`); });
   const pctAll=P.declaredTotal?Math.round(total/P.declaredTotal*100):0;
   const strongCs=[...conceptMastery].filter(c=>c.pct>=70).sort((a,b)=>b.pct-a.pct).slice(0,2).map(c=>c.topic);
   const weakCs=[...conceptMastery].filter(c=>c.pct<60).sort((a,b)=>a.pct-b.pct).slice(0,2).map(c=>c.topic);
   const summaryText=`Scored ${fmtN(total)} out of ${fmtN(P.declaredTotal)} (${pctAll}%).`+(strongCs.length?` Strong on ${strongCs.join(' and ')}.`:'')+(weakCs.length?` The main areas to work on are ${weakCs.join(' and ')}.`:'');
-  const areas=weakC.map(c=>{const ms=mastery.find(m=>m.topic===c); const why=reports.filter(r=>!r._runtimeOrLoser&&r.topic===c&&r.marksAwarded<r.maxMarksForQuestion).map(r=>`Q${r.questionNumber}`).join(', '); return `[${c}] ${fmtN(ms.scored)}/${fmtN(ms.max)} (${level(ms.pct)}) — marks lost in ${why}`;});
+  const areas=weakC.map(c=>{const qs2=counted.filter(r=>r.concept===c); const weakQs=qs2.filter(r=>r.marksAwarded<r.maxMarksForQuestion); const ideas=[...new Set(weakQs.map(r=>r.topic))]; return `[${c}] ${weakQs.length} of ${qs2.length} questions weak — ${ideas.join('; ')}`;});
   const MODE={NEVER_KNEW:'Idea not known',KNEW_BUT_FORGOT:'Forgot a point',KNEW_BUT_MISAPPLIED:'Concept mixed up',KNEW_BUT_MISCALCULATED:'Calculation slip',KNEW_BUT_INCOMPLETE:'Answer incomplete'};
   const lostBy={}; counted.filter(r=>r.marksAwarded<r.maxMarksForQuestion&&r.failureMode).forEach(r=>{lostBy[r.failureMode]=(lostBy[r.failureMode]||0)+(r.maxMarksForQuestion-r.marksAwarded);});
   const lostByMode=Object.entries(lostBy).map(([k,v])=>({mode:k,label:MODE[k]||k,marks:+fmtN(v)})).sort((a,b)=>b.marks-a.marks);
