@@ -347,6 +347,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             <div class="osm-toolbar-btns">
               ${toPublish.length ? `<button class="osm-btn primary" id="osm-pub-all">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
               <button class="osm-btn" id="osm-assign" title="Pick which questions you will mark, if co-teachers split the paper">${ICON.user}<span>My questions${myAssign.length ? ` (${myAssign.length})` : ''}</span></button>
+              <button class="osm-btn" id="osm-howto" title="A quick walkthrough for teachers">?<span>How to mark</span></button>
             </div>
           </div>
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
@@ -360,6 +361,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           </tr>`).join('')}
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
+        body.querySelector('#osm-howto')?.addEventListener('click', () => openTour());
         body.querySelector('#osm-assign')!.addEventListener('click', () => openAssignModal(paper, meta, me.uid, async (list) => {
             await metaRef(paper).set({ assign: { [me.uid]: list } }, { merge: true });
             await reload(); await render();
@@ -437,21 +439,47 @@ function openUploadModal(paper: Paper, stu: any, existing: number, onDone: () =>
 
 // Same storage location + PDF→image handling as the Exams answer-sheet upload:
 //   gradedReports/{teacherUid}/{paperId}/{studentUid}/{time}_{filename}   (PDF pages are already enhanced, photos are processed)
+// A message that stays until the teacher reads it (a toast fades; a failed upload must not be missed).
+function alertBox(title: string, html: string) {
+    const m = document.createElement('div'); m.className = 'osm-modal'; m.style.zIndex = '100002';
+    m.innerHTML = `<div class="osm-modal-card"><h3>${esc(title)}</h3><div style="font-size:.9rem;line-height:1.55">${html}</div><div class="osm-actions"><button class="osm-btn primary" id="osm-al-ok">OK</button></div></div>`;
+    document.body.appendChild(m); m.querySelector('#osm-al-ok')!.addEventListener('click', () => m.remove());
+}
+// Every page is uploaded, checked against what storage actually received, and retried if the network hiccups.
+// All-or-nothing: if even one page cannot be stored, NOTHING is saved for the student and the teacher is told exactly which pages to upload again.
 async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | 'replace') {
     const me = B.teacher()!; const studentUid = stu?.uid;
+    if (!navigator.onLine) { alertBox('No internet connection', 'You appear to be offline, so nothing was uploaded. Please reconnect and upload this student’s sheets again.'); return; }
     busy(true, 'Preparing pages…');
     try {
         const expanded: File[] = [];
         for (const f of files) { if (f.type === 'application/pdf') expanded.push(...await B.pdfToImages(f)); else expanded.push(f); }
-        let n = 0;
-        const pages = await Promise.all(expanded.map(async (img, idx) => {
+        if (!expanded.length) { alertBox('Nothing to upload', 'No pages were found in the file(s) you chose.'); return; }
+        const total = expanded.length; let done = 0; const failed: { n: number; why: string }[] = [];
+        const pages: ({ path: string; url: string } | null)[] = new Array(total).fill(null);
+        const uploadOne = async (idx: number) => {
+            const img = expanded[idx];
             const up = img.name.includes('_page_') ? img : await B.processImage(img).catch(() => img);
             const path = `gradedReports/${me.uid}/${paper.id}/${studentUid}/${img.lastModified || Date.now()}_${Date.now().toString(36)}${idx}_${img.name.replace(/[^\w.\-]/g, '_')}`;
-            await B.storage.ref(path).put(up);
-            const url = await B.storage.ref(path).getDownloadURL();
-            busy(true, `Uploading page ${++n} of ${expanded.length}…`);
-            return { path, url };
-        }));
+            let lastErr: any = null;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    const ref = B.storage.ref(path); await ref.put(up);
+                    const meta = await ref.getMetadata();
+                    if (Number(meta.size) !== up.size) throw new Error(`stored ${meta.size} of ${up.size} bytes`);   // a truncated upload is never accepted
+                    const url = await ref.getDownloadURL(); pages[idx] = { path, url }; done++; busy(true, `Uploaded page ${done} of ${total}…`); return;
+                } catch (e: any) { lastErr = e; await new Promise(r => setTimeout(r, 800 * attempt)); }
+            }
+            failed.push({ n: idx + 1, why: lastErr?.message || 'network error' });
+        };
+        // 3 pages at a time keeps a weak connection from timing out
+        let next = 0; await Promise.all(Array.from({ length: Math.min(3, total) }, async () => { while (next < total) { const i = next++; await uploadOne(i); } }));
+        if (failed.length) {
+            failed.sort((a, b) => a.n - b.n);
+            alertBox('Upload incomplete — nothing was saved', `${failed.length} of ${total} page${total > 1 ? 's' : ''} could not be uploaded (page${failed.length > 1 ? 's' : ''} ${failed.map(f => f.n).join(', ')}). This is usually a network problem. <b>Please upload this student’s sheets again.</b> No partial sheet was saved for ${esc(stu?.name || 'this student')}.`);
+            return;
+        }
+        const good = pages as { path: string; url: string }[];
         const base = { studentUid, studentName: stu?.name || '', rollNumber: stu?.rollNumber || '', uploadedBy: me.uid, updatedAt: Date.now() };
         if (mode === 'replace') {
             // pen strokes were drawn on the old pages — remove them first so they cannot land on the new pages.
@@ -461,14 +489,18 @@ async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | '
                 const det = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get();
                 await Promise.all(det.docs.filter((d: any) => d.id.startsWith('osmInk_')).map((d: any) => d.ref.delete()));
             } catch (e: any) { inkNote = ' Old pen marks could not be deleted, but they will be ignored.'; console.warn('[osm] ink cleanup', e); }
-            await stuRef(paper, studentUid).set({ ...base, pages, pagesVersion: Date.now() }, { merge: true });
+            await stuRef(paper, studentUid).set({ ...base, pages: good, pagesVersion: Date.now() }, { merge: true });
             if (inkNote) toast(inkNote.trim(), 'info');
         } else {
             // arrayUnion: two teachers adding pages to the same student at once can never drop each other's pages
-            await stuRef(paper, studentUid).set({ ...base, pages: B.FieldValue.arrayUnion(...pages) }, { merge: true });
+            await stuRef(paper, studentUid).set({ ...base, pages: B.FieldValue.arrayUnion(...good) }, { merge: true });
         }
-        toast(mode === 'replace' ? `Sheet replaced (${pages.length} page${pages.length > 1 ? 's' : ''}).` : `Added ${pages.length} page${pages.length > 1 ? 's' : ''} for ${stu?.name || 'student'}.`, 'success');
-    } catch (e: any) { console.error('[osm] upload failed', e); toast('Upload failed: ' + e.message, 'error'); }
+        // read it back: every uploaded page must now be on the student's sheet
+        const back = (await stuRef(paper, studentUid).get()).data() || {}; const have = new Set((back.pages || []).map((x: any) => x.url));
+        const lost = good.filter(g => !have.has(g.url)).length;
+        if (lost) { alertBox('Please check this upload', `${lost} page${lost > 1 ? 's were' : ' was'} not found after saving. Please upload this student’s sheets again.`); return; }
+        toast(mode === 'replace' ? `Sheet replaced — all ${good.length} page${good.length > 1 ? 's' : ''} stored and checked.` : `Added ${good.length} page${good.length > 1 ? 's' : ''} for ${stu?.name || 'student'} — all stored and checked (sheet now has ${(back.pages || []).length}).`, 'success');
+    } catch (e: any) { console.error('[osm] upload failed', e); alertBox('Upload failed — nothing was saved', `${esc(e.message || 'Unknown error')}. Please upload this student’s sheets again.`); }
     finally { busy(false); }
 }
 
@@ -526,7 +558,7 @@ function obEnqueue(op: ObOp, delay = 600) {
     }
     ob.ops.set(op.key, op); obSave(); obNotify(); obSchedule(delay);
 }
-function obLog(o: { by: string; owner: string; pid: string; suid: string }, ev: { type: string; q?: string; page?: number; text: string }) {
+function obLog(o: { by: string; owner: string; pid: string; suid: string }, ev: { type: string; q?: string; page?: number; text: string; v?: number | string }) {
     const me = B.teacher(); const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     obEnqueue({ key: 'log:' + id, kind: 'log', by: o.by, owner: o.owner, pid: o.pid, suid: o.suid, at: Date.now(), data: { id, t: Date.now(), by: o.by, n: me?.name || '', ...ev } }, 800);
 }
@@ -539,7 +571,7 @@ async function obExec(o: ObOp) {
         await stuRef(P, o.suid).set(patch, { merge: true });
         if (!d.entry) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: no longer “not attempted” (back to not marked)` });
         else if (d.entry.na) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: marked as NOT ATTEMPTED (no marks, not counted as a weakness)` });
-        else if (d.prev !== d.entry.v) obLog(who, { type: 'mark', q: d.qLabel, text: `${d.qLabel}: marks ${obFmt(d.prev)} → ${obFmt(d.entry.v)}` });
+        else if (d.prev !== d.entry.v) obLog(who, { type: 'mark', q: d.qLabel, v: d.entry.v, text: `${d.qLabel}: marks ${obFmt(d.prev)} → ${obFmt(d.entry.v)}` });
     } else if (o.kind === 'note') {
         await stuRef(P, o.suid).set({ notes: { [d.qk]: d.entry ? d.entry : B.FieldValue.delete() }, updatedAt: Date.now() }, { merge: true });
         obLog(who, { type: 'note', q: d.qLabel, text: `${d.qLabel}: ${d.entry ? (d.prev ? 'edited' : 'added') : 'removed'} the reason note` });
@@ -601,6 +633,32 @@ async function obFlush() {
     for (let k = 0; k < 3; k++) { while (ob.running) await new Promise(r => setTimeout(r, 80)); await obDrain(); if (![...ob.ops.values()].some(o => o.by === B.teacher()?.uid)) break; }
 }
 
+// ───────── "How to mark" walkthrough for teachers ─────────
+const TOUR_STEPS: { t: string; b: string }[] = [
+    { t: '1 · Choose your questions', b: 'On the paper screen click <b>My questions</b> and tick only the questions <i>you</i> will mark (or a range). Without this, the paper keeps asking you about every question. You can still see everyone’s marks.' },
+    { t: '2 · Give marks', b: 'Open a student with <b>Mark</b>. For each question use <b>− / +</b> (half a mark), click a mark button (0, 0.5, 1 …), press <b>Full</b>, or type the number. <b>N/A</b> means the student did not attempt it (greyed, no marks, never counted as a weakness).' },
+    { t: '3 · Colours', b: '<span style="color:#2e9e4f;font-weight:700">Green</span> = full marks, <span style="color:#d99100;font-weight:700">yellow</span> = some marks, <span style="color:#e53935;font-weight:700">red</span> = zero, grey = not attempted / not marked yet.' },
+    { t: '4 · Why marks were cut', b: 'Tap the small <b>Why marks cut?</b> button under a question and write — or press the 🎤 microphone and <b>speak</b>. The student never sees this; the feedback is built on it.' },
+    { t: '5 · Write on the sheet', b: 'Tools on the left: <b>Pen</b>, <b>Aa Note</b> (type, drag to move), <b>Tick</b> and <b>Cross</b> (click anywhere to place), <b>Erase</b> (click near a mark). Choose <b>colour</b> and <b>Thin / Medium / Thick</b>. <b>Ctrl+Z</b> (or Undo) takes back your last action. Click the active tool again to just scroll the page.' },
+    { t: '6 · Your questions, and the others', b: 'In the question list on the left, <b>your</b> questions have a blue ring; others are faded. Everyone sees everyone’s marks, notes and annotations live — nothing you do overwrites another teacher.' },
+    { t: '7 · Completed', b: 'When your questions are done click <b>Completed</b>. Your name then turns <span style="color:#1e8e4e;font-weight:700">green</span> at the bottom. Until you click it, your part is not complete. Changing a mark afterwards reopens it — click Completed again.' },
+    { t: '8 · Always saved', b: 'The top bar says <b>“All changes saved”</b>. If it shows a warning, do not worry: your work is kept on this computer and is sent automatically when the connection returns. <b>History</b> shows every change — who, what, when — and highlights any question two teachers both marked.' },
+];
+function openTour(startAt = 0) {
+    document.querySelectorAll('.osm-tour-back').forEach(n => n.remove());
+    let i = startAt; const back = document.createElement('div'); back.className = 'osm-tour-back';
+    const draw = () => {
+        const st = TOUR_STEPS[i];
+        back.innerHTML = `<div class="osm-tour"><div class="osm-tour-h"><b>How to mark a paper</b><span>${i + 1} of ${TOUR_STEPS.length}</span></div><div class="osm-tour-body"><h4>${st.t}</h4><p>${st.b}</p></div>
+          <div class="osm-tour-dots">${TOUR_STEPS.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</div>
+          <div class="osm-tour-f"><button class="osm-btn small" id="tour-skip">Close</button><span style="flex:1"></span><button class="osm-btn small" id="tour-prev" ${i === 0 ? 'disabled' : ''}>Back</button><button class="osm-btn small primary" id="tour-next">${i === TOUR_STEPS.length - 1 ? 'Done' : 'Next'}</button></div></div>`;
+        back.querySelector('#tour-skip')!.addEventListener('click', () => back.remove());
+        back.querySelector('#tour-prev')!.addEventListener('click', () => { i = Math.max(0, i - 1); draw(); });
+        back.querySelector('#tour-next')!.addEventListener('click', () => { if (i >= TOUR_STEPS.length - 1) back.remove(); else { i++; draw(); } });
+    };
+    draw(); document.body.appendChild(back); try { localStorage.setItem('osm-tour-seen', '1'); } catch { /* */ }
+}
+
 // ───────────────────────── SCREEN C: marking desk ─────────────────────────
 type InkStroke = { c: string; w: number; d?: string; t?: string; x?: number; y?: number; k?: 'tick' | 'cross' };   // a pen stroke (d) or a text note (t at x,y)
 async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; name: string }[], studentUid: string, order: string[], startView: 'mark' | 'fb' = 'mark') {
@@ -650,6 +708,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
             <span class="osm-inkstat saved" id="osm-ready" style="display:none">✔ Ready for analysis</span><span class="osm-inkstat" id="osm-ink-status" title="Every change is saved"></span>
+            <button class="osm-btn small" id="osm-tour" title="How to mark: a quick walkthrough">?<span>How to mark</span></button>
             <button class="osm-btn small" id="osm-hist" title="Everything changed on this sheet: who, what, which question, when">${ICON.msg}<span>History</span></button>
           </div>
         </div>
@@ -843,6 +902,13 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             if (inkDirty) saveInk();
         } catch (e) { console.warn('[osm] ink load', e); inkLoaded = true; inkLoadFailed = true; inkBase = inkCounts(); toast('Could not load existing pen marks — new marks will still be saved safely.', 'info'); if (inkDirty) saveInk(); }
     })();
+
+    // co-teachers' pen marks, ticks and notes appear live (no refresh needed); yours are never replaced by this
+    { const un = paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').onSnapshot((snap: any) => {
+        let any = false;
+        snap.docChanges().forEach((ch: any) => { const id: string = ch.doc.id; if (!id.startsWith('osmInk_') || ch.type === 'removed') return; const tu = id.slice(7); if (tu === me.uid) return; const d = ch.doc.data(); if ((d.pv ?? null) !== (doc.pagesVersion ?? null)) return; inks[tu] = d.pages || {}; any = true; });
+        if (any) pageWrap.forEach((_, i) => renderInk(i));
+      }, (e: any) => console.warn('[osm] live ink listener', e)); stopListeners.push(un); }
 
     // ---- tool buttons ------------------------------------------------------
     const TOOLS = ['pen', 'note', 'tick', 'cross', 'erase'] as const;
@@ -1072,10 +1138,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         sideEl.innerHTML = `${tabsHtml()}
           <div class="osm-score"><div class="osm-score-top"><div class="osm-score-num">${fmt1(sc.total)}<small> / ${dt || '—'}</small></div>
             <div class="osm-sub"><span id="osm-marked">${sc.marked}/${sc.count}</span> marked · <span id="osm-save" class="osm-save"></span></div></div>
-            <div class="osm-bar"><i style="width:${dt ? Math.min(100, sc.total / dt * 100) : 0}%"></i></div></div>
+            <div class="osm-bar"><i style="width:${dt ? Math.min(100, sc.total / dt * 100) : 0}%"></i></div>
+            ${hasAssign ? `<div class="osm-mine" id="osm-mine"></div>` : ''}</div>
           ${hasAssign ? `<label class="osm-unlock"><input type="checkbox" id="osm-unlock" ${unlockAll ? 'checked' : ''}> Also let me edit other teachers' questions</label>` : ''}
           <div class="osm-qwrap">
-          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''} ${m?.na ? 'na' : ''}" data-i="${i}" style="--c:${qColor(m, qMax(q))}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
+          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${hasAssign ? (myIdx.has(i) ? 'mine' : 'notmine') : ''}" data-i="${i}" style="--c:${qColor(m, qMax(q))}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
           <div class="osm-qs" id="osm-qs">
           ${paper.questions.map((q, i) => {
               const m = doc.marks?.[qk(i)]; const mine = editable(i); const loser = sc.losers.has(q.questionNumber || String(i + 1));
@@ -1145,6 +1212,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             const show = bx.style.display === 'none'; bx.style.display = show ? 'block' : 'none'; if (show) ta.focus();
         }));
         sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-reason').forEach(ta => ta.addEventListener('input', () => queueNote(Number(ta.dataset.i), ta.value)));
+        updateMine();
         sideEl.querySelector('#osm-given')!.addEventListener('click', toggleDone);
         sideEl.querySelector('#osm-next')?.addEventListener('click', () => pos < order.length - 1 && openDesk(roster, paper, teachers, order[pos + 1], order, view));
     }
@@ -1189,7 +1257,15 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         if (i != null) { const n = sideEl.querySelector(`.osm-in[data-i="${i}"]`) as HTMLInputElement | null; if (n) { n.value = v ?? n.value; n.focus(); } }
         toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
     }
+    // "your part": how many of YOUR questions are marked, and whether you have clicked Completed (your name turns green only then)
+    function updateMine() {
+        const el = sideEl.querySelector('#osm-mine') as HTMLElement | null; if (!el || !hasAssign) return;
+        const mine = [...myIdx]; const marked = mine.filter(i => doc.marks?.[qk(i)] !== undefined).length; const done = !!doc.done?.[me.uid];
+        el.className = 'osm-mine ' + (done ? 'ok' : marked === mine.length ? 'ready' : '');
+        el.innerHTML = `<span><b>Your questions:</b> ${marked} of ${mine.length} marked</span><span>${done ? '✓ Completed' : marked === mine.length ? 'All marked — click <b>Completed</b>' : 'not completed yet'}</span>`;
+    }
     function refreshScoreOnly() {
+        updateMine();
         const sc = scoreFor(paper, doc.marks); const dt = declaredTotal(paper);
         const n = sideEl.querySelector('.osm-score-num'); if (n) n.innerHTML = `${fmt1(sc.total)}<small> / ${dt || '—'}</small>`;
         const mk = sideEl.querySelector('#osm-marked'); if (mk) mk.textContent = `${sc.marked}/${sc.count}`;
@@ -1253,14 +1329,18 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         const mo = new MutationObserver(decorate); mo.observe(sideEl, { childList: true, subtree: true }); decorate();
         stopListeners.push(() => { mo.disconnect(); stopRec(); });
     }
+    updateMine();
     const onSync = () => renderSync(); ob.subs.add(onSync); stopListeners.push(() => ob.subs.delete(onSync)); renderSync();
     desk.querySelector('#osm-hist')!.addEventListener('click', () => openHistory());
+    desk.querySelector('#osm-tour')!.addEventListener('click', () => openTour());
+    try { if (!localStorage.getItem('osm-tour-seen')) setTimeout(() => openTour(), 600); } catch { /* */ }
     // History: every confirmed change on this sheet (marks, reason notes, feedback edits, annotations), by every teacher; AI feedback is listed too.
     async function openHistory() {
         document.querySelectorAll('.osm-hist-back').forEach(n => n.remove());
         const back = document.createElement('div'); back.className = 'osm-hist-back';
         back.innerHTML = `<div class="osm-hist"><div class="osm-hist-h"><b>Change history</b><span class="osm-sub">${esc(doc.studentName || stu?.name || '')} · Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span><button class="osm-btn small" id="hist-x">Close</button></div>
           <div class="osm-hist-note">Marks are only ever entered or changed by teachers. The AI writes feedback and the learning analysis only, and never changes a mark.</div>
+          <div id="hist-conf"></div><div class="osm-hist-sum" id="hist-sum"></div>
           <div class="osm-hist-f"><select id="hist-q"><option value="">All questions</option></select><select id="hist-p"><option value="">Everyone</option></select></div>
           <div class="osm-hist-l" id="hist-l"><div class="osm-sub" style="padding:14px">Loading…</div></div></div>`;
         document.body.appendChild(back); back.addEventListener('click', e => { if (e.target === back) back.remove(); }); back.querySelector('#hist-x')!.addEventListener('click', () => back.remove());
@@ -1268,6 +1348,13 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         try { const snap = await paperRef(paper.owner, paper.id).collection('submissions').doc(studentUid).collection('detail').get(); snap.docs.forEach((d: any) => { if (d.id.startsWith('osmLog_')) evs.push(...(d.data().events || [])); }); } catch (e: any) { (back.querySelector('#hist-l') as HTMLElement).innerHTML = `<div class="osm-sub" style="padding:14px">Could not load the history: ${esc(e.message)}</div>`; return; }
         const seen = new Set(evs.map(e => e.id)); ob.ops.forEach(o => { if (o.kind === 'log' && o.suid === studentUid && o.pid === paper.id && !seen.has(o.data.id)) evs.push({ ...o.data, pendingSave: true }); });
         evs.sort((a, b) => b.t - a.t);
+        // questions that more than one teacher gave a mark to are shown separately, with each teacher's value
+        { const val = (e: any) => e.v !== undefined ? e.v : ((String(e.text).match(/→\s*(.+)$/) || [])[1] || '?');
+          const byQ = new Map<string, any[]>(); evs.filter(e => e.type === 'mark' && e.q).forEach(e => { if (!byQ.has(e.q)) byQ.set(e.q, []); byQ.get(e.q)!.push(e); });
+          const conf = [...byQ.entries()].filter(([, l]) => new Set(l.map(e => e.by)).size > 1).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+          (back.querySelector('#hist-conf') as HTMLElement).innerHTML = conf.length ? `<div class="osm-hist-conf"><b>⚠ ${conf.length} question${conf.length > 1 ? 's were' : ' was'} marked by more than one teacher</b>${conf.map(([q, l]) => { const sorted = [...l].sort((a, b) => a.t - b.t); const last = sorted[sorted.length - 1]; return `<div><b>${esc(q)}</b>: ${sorted.map(e => `${esc(e.n || 'Teacher')} gave ${esc(val(e))}`).join(' → ')} &nbsp;·&nbsp; <b>counted now: ${esc(val(last))}</b> (${esc(last.n || 'Teacher')}, the latest)</div>`; }).join('')}</div>` : '';
+          const per = new Map<string, { m: number; no: number; ink: number; fb: number }>(); evs.forEach(e => { if (e.type === 'ai') return; const k = e.n || 'Teacher'; const c = per.get(k) || { m: 0, no: 0, ink: 0, fb: 0 }; if (e.type === 'mark') c.m++; else if (e.type === 'note') c.no++; else if (e.type === 'ink') c.ink++; else if (e.type === 'feedback') c.fb++; per.set(k, c); });
+          (back.querySelector('#hist-sum') as HTMLElement).innerHTML = [...per.entries()].map(([n, c]) => `<b>${esc(n)}</b>: ${c.m} mark change${c.m === 1 ? '' : 's'}, ${c.no} note${c.no === 1 ? '' : 's'}, ${c.ink} annotation edit${c.ink === 1 ? '' : 's'}${c.fb ? `, ${c.fb} feedback edit${c.fb === 1 ? '' : 's'}` : ''}`).join(' &nbsp;|&nbsp; '); }
         const qSel = back.querySelector('#hist-q') as HTMLSelectElement, pSel = back.querySelector('#hist-p') as HTMLSelectElement;
         [...new Set(evs.map(e => e.q).filter(Boolean))].sort((a: any, b: any) => a.localeCompare(b, undefined, { numeric: true })).forEach((q: any) => qSel.insertAdjacentHTML('beforeend', `<option>${esc(q)}</option>`));
         [...new Set(evs.map(e => e.n || 'Teacher'))].forEach((n: any) => pSel.insertAdjacentHTML('beforeend', `<option>${esc(n)}</option>`));
@@ -1344,6 +1431,14 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-rb.mine{box-shadow:0 0 0 2px #2575fc;font-weight:800}.osm-rb.notmine{opacity:.45}
+.osm-mine{display:flex;justify-content:space-between;gap:8px;margin-top:5px;padding:4px 9px;border-radius:8px;background:#eef3ff;color:#2a4fb0;font-size:.72rem}.osm-mine.ready{background:#fff6df;color:#8a5a00}.osm-mine.ok{background:#e8f6ee;color:#17613a}
+.osm-tour-back{position:fixed;inset:0;z-index:100003;background:rgba(15,20,40,.6);display:flex;align-items:center;justify-content:center;padding:16px}
+.osm-tour{background:#fff;color:#1b1f3b;border-radius:16px;width:min(520px,100%);box-shadow:0 20px 60px rgba(0,0,0,.4);font-family:Inter,Poppins,system-ui,sans-serif;overflow:hidden}
+.osm-tour-h{display:flex;justify-content:space-between;padding:12px 18px;background:linear-gradient(135deg,#6a11cb,#2575fc);color:#fff;font-size:.9rem}.osm-tour-body{padding:16px 20px 6px;min-height:150px}.osm-tour-body h4{margin:0 0 8px;font-size:1.05rem}.osm-tour-body p{margin:0;line-height:1.6;font-size:.92rem}
+.osm-tour-dots{display:flex;gap:5px;justify-content:center;padding:8px}.osm-tour-dots i{width:7px;height:7px;border-radius:50%;background:#d7dcec}.osm-tour-dots i.on{background:#2575fc}.osm-tour-f{display:flex;gap:8px;padding:10px 16px 14px}
+.osm-hist-conf{margin:8px 18px 0;padding:8px 12px;border:1.5px solid #e8a100;background:#fff8e6;border-radius:10px;font-size:12.5px;color:#6f4700}.osm-hist-conf b{color:#8a5a00}.osm-hist-conf div{margin-top:3px}
+.osm-hist-sum{margin:8px 18px 0;font-size:12px;color:#4a5170}
 .osm-qfoot{display:flex!important;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:8px;margin-top:4px!important;min-height:22px}
 .osm-qfoot .osm-by{margin:0!important;font-size:.7rem!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 #osm-root .osm-qfoot .osm-rbtn{margin:0 0 0 auto!important;width:auto!important;min-height:0!important;height:20px!important;padding:0 8px!important;font-size:.66rem!important;font-weight:600;border-width:1px!important;border-radius:99px!important;display:inline-flex!important;align-items:center;gap:4px;flex:none;white-space:nowrap}
