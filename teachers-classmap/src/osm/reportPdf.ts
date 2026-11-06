@@ -43,7 +43,7 @@ async function osmMathToHtml(text: any, opts: { maxChars?: number } = {}): Promi
 export type ReportPage = { w: number; h: number; landscape: boolean; inner: string };
 export type ReportBuild = { specs: ReportPage[]; ff: string; PAD: number; when: string; nm: string; test: string };
 
-export async function buildOsmPages(report: any, ctx: any, say: (t: string) => void = () => { /* */ }): Promise<ReportBuild> {
+export async function buildOsmPages(report: any, ctx: any, say: (t: string) => void = () => { /* */ }, mode: 'pdf' | 'view' = 'pdf'): Promise<ReportBuild> {
     const made: HTMLElement[] = [];
     try {
         const of: any = report.overallFeedback || {}; const an: any = report.analysis || {};
@@ -105,6 +105,7 @@ export async function buildOsmPages(report: any, ctx: any, say: (t: string) => v
         const picOf = new Map<number, string>(); const need = [...byPage.keys()].sort((a, b) => a - b);
         const loadPic = async (pg: number) => {
             const u = urls[pg]; if (!u) return;
+            if (mode === 'view') { picOf.set(pg, u); return; }   // on screen the picture is used straight from storage: nothing is downloaded or re-encoded first, so the report opens fast
             try {
                 const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 20000);
                 const blob = await (await fetch(u, { mode: 'cors', signal: ctl.signal })).blob(); clearTimeout(to);
@@ -120,7 +121,7 @@ export async function buildOsmPages(report: any, ctx: any, say: (t: string) => v
                     })); g.restore();
                 } catch (e) { console.warn('[osm pdf] annotations not drawn', e); }
                 picOf.set(pg, cv.toDataURL('image/jpeg', 0.93));
-            } catch (e) { console.warn('[osm pdf] sheet picture not available for page', pg + 1, e); }
+            } catch (e) { console.warn('[osm pdf] sheet picture not available for page', pg + 1, e); picOf.set(pg, u); }
         };
         for (let k = 0; k < need.length; k += 4) { say(`Loading answer sheet ${Math.min(k + 4, need.length)} of ${need.length}…`); await Promise.all(need.slice(k, k + 4).map(loadPic)); }
         say('Typesetting formulas…');
@@ -188,16 +189,24 @@ export async function osmReportPdf(report: any, ctx: any, say: (t: string) => vo
 // The same pages, shown on screen (scaled to the screen width). Used by the student app.
 export async function mountOsmReportView(container: HTMLElement, report: any, ctx: any, say: (t: string) => void = () => { /* */ }) {
     container.innerHTML = '<div style="padding:40px;text-align:center;color:#6b7280;font-family:Poppins,Arial,sans-serif;">Loading your report…</div>';
-    const { specs, ff, PAD, when } = await buildOsmPages(report, ctx, say);
+    const { specs, ff, PAD, when } = await buildOsmPages(report, ctx, say, 'view');
     container.innerHTML = '';
-    const col = document.createElement('div'); col.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;padding:12px;background:#eef0f7;'; container.appendChild(col);
+    const col = document.createElement('div'); col.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:14px;padding:10px 8px 24px;background:#eef0f7;min-width:min-content;';
+    const bar = document.createElement('div'); bar.style.cssText = 'position:sticky;top:0;z-index:5;display:flex;gap:6px;align-items:center;justify-content:center;padding:6px;background:rgba(238,240,247,.95);width:100%;box-sizing:border-box;font-family:Poppins,Arial,sans-serif;';
+    const btnCss = 'border:1px solid #cfd5ea;background:#fff;border-radius:8px;min-width:36px;height:32px;font-size:15px;font-weight:600;cursor:pointer;color:#1a1f6e;';
+    bar.innerHTML = `<button data-z="-" style="${btnCss}" aria-label="Zoom out">−</button><span data-zv style="font-size:12px;color:#4a5170;min-width:44px;text-align:center;">Fit</span><button data-z="+" style="${btnCss}" aria-label="Zoom in">+</button><button data-z="0" style="${btnCss}padding:0 10px;font-size:12px;">Fit</button>`;
+    container.appendChild(col); col.appendChild(bar);
+    let zoom = 1;
     const pages: { outer: HTMLElement; inner: HTMLElement; sp: ReportPage }[] = [];
     specs.forEach((sp, n) => {
         const outer = document.createElement('div'); outer.style.cssText = 'position:relative;background:#fff;box-shadow:0 2px 14px rgba(30,30,90,.18);border-radius:6px;overflow:hidden;flex:none;';
         const inner = document.createElement('div'); inner.style.cssText = `position:absolute;left:0;top:0;width:${sp.w}px;height:${sp.h}px;transform-origin:0 0;overflow:hidden;${ff}`;
         inner.innerHTML = `${sp.inner}${osmPageFooter(PAD, when, n)}`; outer.appendChild(inner); col.appendChild(outer); pages.push({ outer, inner, sp });
     });
-    const fit = () => { const avail = Math.max(280, (container.clientWidth || window.innerWidth) - 24); pages.forEach(({ outer, inner, sp }) => { const k = Math.max(0.4, Math.min(1, avail / sp.w)); inner.style.transform = `scale(${k})`; outer.style.width = sp.w * k + 'px'; outer.style.height = sp.h * k + 'px'; }); };
+    // pages fit the screen width (bigger on a computer, readable on a phone) and can be zoomed with + / − or by pinching
+    const fit = () => { const avail = Math.max(260, (container.clientWidth || window.innerWidth) - 20); pages.forEach(({ outer, inner, sp }) => { const k = Math.min(1.7, avail / sp.w) * zoom; inner.style.transform = `scale(${k})`; outer.style.width = sp.w * k + 'px'; outer.style.height = sp.h * k + 'px'; }); (bar.querySelector('[data-zv]') as HTMLElement).textContent = zoom === 1 ? 'Fit' : Math.round(zoom * 100) + '%'; };
+    bar.addEventListener('click', e => { const b = (e.target as HTMLElement).closest('button'); if (!b) return; const z = b.getAttribute('data-z'); zoom = z === '0' ? 1 : Math.max(0.5, Math.min(3, +(zoom + (z === '+' ? 0.25 : -0.25)).toFixed(2))); fit(); });
+    container.style.overflow = 'auto'; (container.style as any).webkitOverflowScrolling = 'touch';
     fit(); const ro = () => fit(); window.addEventListener('resize', ro);
     (container as any)._osmUnmount = () => window.removeEventListener('resize', ro);
 }
