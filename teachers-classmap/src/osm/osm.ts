@@ -984,7 +984,6 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
             <div class="osm-qmap" title="Jump to a question">${fbReport.map((r, i) => `<button class="osm-qm ${toneOf(r)}" data-i="${i}">${esc(r.questionNumber)}</button>`).join('')}</div>
             ${fbReport.map((qr, i) => fbCard(qr, i)).join('')}
             <div class="osm-ov"><div class="osm-ovtitle">Learning summary</div>
-              ${ovBlock('summary', 'Summary', of.summary || '', false)}
               ${learnBlocks(curL, { fs: 12 }).filter(x => x.kind !== 'summary').map(x => x.html).join('')}
               ${ovBlock('steps', 'Your next steps', linesOf(of.nextSteps), true)}
               ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this)</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}

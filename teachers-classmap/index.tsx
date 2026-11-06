@@ -24768,7 +24768,7 @@ async function osmAnalysisPdf(report: any, ctx: any, onProgress?: (t: string) =>
         const sect = (t: string, sub2: string) => `<div style="margin-top:12px;font-size:10px;letter-spacing:1px;font-weight:700;color:#1a1f6e;">${t} <span style="font-weight:400;color:#7f8c8d;letter-spacing:0;">${sub2}</span></div>`;
         const cm: any[] = an.conceptMastery || of.conceptMastery || []; const lb: any[] = an.lostByMode || []; const tp: any[] = (report.studentIntelligence?.questionTypePerformance) || [];
         const steps: any[] = Array.isArray(of.nextSteps) ? of.nextSteps : [];
-        const sb: string[] = learnBlocks(LRN, { fs: 10.5, steps, summary: of.summary || '' }).map(x => x.html);
+        const sb: string[] = learnBlocks(LRN, { fs: 10.5, steps }).map(x => x.html);
         if (tp.length) { const tt = (t: any) => bar(String(t.type || '').charAt(0) + String(t.type || '').slice(1).toLowerCase(), `${f1(t.scored)}/${f1(t.max)}`, t.max ? t.scored / t.max * 100 : 0, t.max && t.scored / t.max >= .8 ? green : amber); sb.push(sect('SCORE BY QUESTION TYPE', '') + tt(tp[0])); tp.slice(1).forEach(t => sb.push(tt(t))); }
         { const pk = pack(sb, PW - 2 * PAD, PH - PAD - FOOT - 44);
           pk.forEach((blocks, n) => specs.push({ w: PW, h: PH, landscape: false, inner: `<div style="padding:${PAD}px;">${contBar(n === 0 ? 'YOUR LEARNING SUMMARY' : 'YOUR LEARNING SUMMARY (continued)')}${blocks.join('')}</div>` })); }
