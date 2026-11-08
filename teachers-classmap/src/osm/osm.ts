@@ -177,7 +177,8 @@ function studentState(paper: Paper, s: StuDoc | undefined, meta: Meta, teachers:
     const sc = scoreFor(paper, s.marks);
     const contributors = new Set<string>(Object.values(s.marks || {}).map(m => m.by));
     const assigned = Object.entries(meta.assign || {}).filter(([, a]) => a?.length).map(([u]) => u);
-    const need = [...new Set([...assigned, ...contributors])];
+    // Only teachers who actually marked THIS student must click Completed. (Teachers who split the class between them never have to complete each other's students.)
+    const need = [...contributors]; void assigned;
     const doneBy = Object.keys(s.done || {});
     // step 2 + 3 of the flow: once Claude has analysed the sheet a report exists (parent doc); publishing sets published:true
     if (parent) { const pub = !!parent.published; return { code: pub ? 'published' : 'analysed', label: pub ? 'Published' : 'Analysed · ready to publish', ready: false, doneBy, needBy: [] as string[] }; }

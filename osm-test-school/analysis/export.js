@@ -43,8 +43,8 @@ async function renderMarked(file,dims,strokes){
   const man={paper:{owner:P.owner,id:P.id,title:P.x.assessmentTitle,className:P.x.className,section:P.x.section,subject:P.x.subject,stream:P.x.stream||'',schoolName:school,declaredTotal:P.x.totalMarks,board:P.x.board||''},questions:P.x.questions,meta,students:[]};
   const { computeOrLoserQNums } = require('./orRule');
   for(const s of students){ const o=s.osm; const marks=o.marks||{}; const nq=P.x.questions.length; const markedAll=P.x.questions.every((_,i)=>marks['q'+i]!==undefined);
-   const contributors=[...new Set(Object.values(marks).map(m=>m.by))]; const need=Object.entries(meta.assign||{}).filter(([,a])=>a?.length).map(([u])=>u); const needed=need.length?need:contributors; const done=Object.keys(o.done||{});
-   const ready=markedAll&&needed.length>0&&needed.every(u=>done.includes(u));
+   const contributors=[...new Set(Object.values(marks).map(m=>m.by))]; const need=Object.entries(meta.assign||{}).filter(([,a])=>a?.length).map(([u])=>u); const needed=contributors;   // only the teachers who marked this student must have clicked Completed const done=Object.keys(o.done||{});
+   const ready=markedAll&&needed.length>0&&(process.argv.includes('--force-ready')||needed.every(u=>done.includes(u)));   // --force-ready: only when the owner has asked for the analysis before the teachers click Completed
    if(!ready){skipped.push(`${o.rollNumber} ${o.studentName} (marked ${Object.keys(marks).length}/${nq}, done by ${done.length}/${needed.length})`);continue;}
    const reports=P.x.questions.map((q,i)=>({questionNumber:q.questionNumber||String(i+1),marksAwarded:marks['q'+i].v,maxMarksForQuestion:Number(q.marks)||0,checkingInstructions:q.checkingInstructions||''}));
    const losers=[...computeOrLoserQNums(reports,P.x.questions)]; const total=reports.filter(r=>!losers.includes(r.questionNumber)).reduce((a,r)=>a+r.marksAwarded,0);
