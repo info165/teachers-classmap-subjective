@@ -358,9 +358,9 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
               <div class="osm-kpi"><b>${publishedN}</b><span>published</span></div>
             </div>
             <div class="osm-toolbar-btns">
-              ${toPublish.length ? `<button class="osm-btn primary" id="osm-pub-all">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
               ${multiTeacher ? `<button class="osm-btn ${myAssign.length ? '' : 'primary osm-attn'}" id="osm-assign" title="Several teachers mark this paper: choose which questions are yours">${ICON.user}<span>${myAssign.length ? `My questions (${myAssign.length})` : 'Choose my questions'}</span></button>` : ''}
               <button class="osm-btn" id="osm-howto" title="A quick walkthrough for teachers">?<span>How to mark</span></button>
+              ${toPublish.length ? `<button class="osm-btn osm-pubsoft" id="osm-pub-all" title="Publishes every analysed report on this paper. Can be done later.">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
             </div>
           </div>
           ${multiTeacher && !myAssign.length ? `<div class="osm-pickbanner">Several teachers mark this paper. <b>First choose your questions</b> (“Choose my questions”), so you are only asked about your own.</div>` : ''}
@@ -1453,6 +1453,7 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+#osm-root .osm-btn.osm-pubsoft{background:#f1f5f4;color:#4b6358;border:1px solid #cfdad5;box-shadow:none;font-weight:500}#osm-root .osm-btn.osm-pubsoft:hover{background:#e4ece8}
 .osm-table tr.osm-dim{opacity:.5}.osm-stu-det{margin:10px 0;border:1px solid var(--osm-line,#e3e6f3);border-radius:10px;padding:8px 12px}.osm-stu-det summary{cursor:pointer;font-weight:600}.osm-stu-checks{max-height:200px;overflow:auto}
 .osm-attn{animation:osmattn 1.4s ease-in-out infinite}@keyframes osmattn{0%,100%{box-shadow:0 0 0 0 rgba(37,117,252,.55)}50%{box-shadow:0 0 0 8px rgba(37,117,252,0)}}
 .osm-pickbanner{margin:10px 0;padding:9px 13px;border-radius:10px;background:#fff6df;border:1.5px solid #e8a100;color:#6f4700;font-size:.85rem}
