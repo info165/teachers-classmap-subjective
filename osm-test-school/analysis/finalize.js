@@ -42,7 +42,7 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
   const losersPre=new Set(s.losers||[]);
   man.questions.forEach((q,i)=>{
    const qn=q.questionNumber||String(i+1); const m=s.marks[qn]; const f=byIdx.get(i)||{}; const max=Number(q.marks)||0; const got=m.marks;
-   const isAlt=/alternative question \(or\)/i.test(q.checkingInstructions||''); const notChosen=!!(f.altNotChosen&&isAlt)||!!m.na;   // m.na = the teacher marked this question "not attempted" (any question type): uncounted, never a weakness
+   const isAlt=/alternative question \(or\)/i.test(q.checkingInstructions||''); const notChosen=!!(f.altNotChosen&&isAlt)||!!m.na||(!!f.unattempted&&got===0);   // a zero the student left blank counts as not attempted even if the teacher did not press N/A   // m.na = the teacher marked this question "not attempted" (any question type): uncounted, never a weakness
    const loser=losersPre.has(qn)||notChosen; const counted=!loser; const lost=counted&&got<max;
    const tag=`${R} Q${qn} (${fmtN(got)}/${fmtN(max)})`;
    if(!f.topic) {problems.push(`${tag}: topic missing`); bad=true;}

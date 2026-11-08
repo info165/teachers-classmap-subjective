@@ -57,7 +57,7 @@ interface Paper {
 }
 interface Roster { id: string; className: string; section: string; subject: string; stream?: string; schoolName: string; students: any[]; board?: string; teacherUid: string }
 interface StuDoc { notes?: Record<string, { t: string; by: string; n: string; at: number }>; pagesVersion?: number; studentUid: string; studentName: string; rollNumber: string; pages?: { url: string; path: string }[]; marks?: Record<string, { v: number; by: string; n: string; t: number }>; done?: Record<string, { n: string; t: number }>; }
-interface Meta { assign?: Record<string, number[]>; readyForAnalysis?: boolean; }
+interface Meta { assign?: Record<string, number[]>; students?: Record<string, string[]>; readyForAnalysis?: boolean; }
 
 const _svg = (d: string) => `<svg class="osm-ic" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON: Record<string, string> = {
@@ -177,8 +177,11 @@ function studentState(paper: Paper, s: StuDoc | undefined, meta: Meta, teachers:
     const sc = scoreFor(paper, s.marks);
     const contributors = new Set<string>(Object.values(s.marks || {}).map(m => m.by));
     const assigned = Object.entries(meta.assign || {}).filter(([, a]) => a?.length).map(([u]) => u);
-    // Only teachers who actually marked THIS student must click Completed. (Teachers who split the class between them never have to complete each other's students.)
-    const need = [...contributors]; void assigned;
+    // Who must click Completed for THIS student: every teacher who chose questions (they all mark every student, each their own questions),
+    // unless that teacher chose "My students" and this student is not one of them; plus anyone who actually entered a mark for this student.
+    const stuUid = s.studentUid;
+    const assignedHere = assigned.filter(u => { const f = (meta.students || {})[u]; return !f || !f.length || f.includes(stuUid); });
+    const need = [...new Set([...assignedHere, ...contributors])];
     const doneBy = Object.keys(s.done || {});
     // step 2 + 3 of the flow: once Claude has analysed the sheet a report exists (parent doc); publishing sets published:true
     if (parent) { const pub = !!parent.published; return { code: pub ? 'published' : 'analysed', label: pub ? 'Published' : 'Analysed · ready to publish', ready: false, doneBy, needBy: [] as string[] }; }
@@ -345,7 +348,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             const all = paper.questions.map((_, i) => i);
             try { await metaRef(paper).set({ assign: { [me.uid]: all } }, { merge: true }); meta.assign = { ...(meta.assign || {}), [me.uid]: all }; } catch (e) { console.warn('[osm] auto-assign', e); }
         }
-        const myAssign = meta.assign?.[me.uid] || [];
+        const myAssign = meta.assign?.[me.uid] || []; const myStu = meta.students?.[me.uid] || [];
         body.innerHTML = `
           <div class="osm-toolbar">
             <div class="osm-kpis">
@@ -362,7 +365,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           </div>
           ${multiTeacher && !myAssign.length ? `<div class="osm-pickbanner">Several teachers mark this paper. <b>First choose your questions</b> (“Choose my questions”), so you are only asked about your own.</div>` : ''}
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-          ${rows.map(({ s, d, st, sc, parent }) => `<tr>
+          ${rows.map(({ s, d, st, sc, parent }) => `<tr class="${myStu.length && !myStu.includes(s.uid) ? 'osm-dim' : ''}">
             <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
             <td>${d?.pages?.length ? `<span class="osm-pgs">${d.pages.length} page${d.pages.length > 1 ? 's' : ''}</span> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Add / replace</button>` : `<button class="osm-btn small osm-up" data-uid="${esc(s.uid)}">${ICON.upload}<span>Upload sheet</span></button>`}</td>
             <td>${d?.pages?.length ? `<b>${fmt1(parent?.overallScore ?? sc.total)}</b> / ${declaredTotal(paper) || '—'}` : '—'}</td>
@@ -373,11 +376,11 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
         body.querySelector('#osm-howto')?.addEventListener('click', () => openTour());
-        body.querySelector('#osm-assign')?.addEventListener('click', () => openAssignModal(paper, meta, me.uid, async (list) => {
-            await metaRef(paper).set({ assign: { [me.uid]: list } }, { merge: true });
+        body.querySelector('#osm-assign')?.addEventListener('click', () => openAssignModal(paper, meta, me.uid, roster.students, async (list, stu) => {
+            await metaRef(paper).set({ assign: { [me.uid]: list }, students: { [me.uid]: stu } }, { merge: true });
             await reload(); await render();
         }));
-        const order = rows.filter(r => r.d?.pages?.length).map(r => r.s.uid);
+        const order = rows.filter(r => r.d?.pages?.length && (!myStu.length || myStu.includes(r.s.uid))).map(r => r.s.uid);
         body.querySelectorAll<HTMLButtonElement>('.osm-open').forEach(b => b.addEventListener('click', () => openDesk(roster, paper, teachers, b.dataset.uid!, order)));
         body.querySelectorAll<HTMLButtonElement>('.osm-fbbtn').forEach(b => b.addEventListener('click', () => openDesk(roster, paper, teachers, b.dataset.uid!, order, 'fb')));
         const doPublish = async (uids: string[]) => {
@@ -515,8 +518,8 @@ async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | '
     finally { busy(false); }
 }
 
-function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: number[]) => Promise<void>) {
-    const cur = new Set(meta.assign?.[uid] || []);
+function openAssignModal(paper: Paper, meta: Meta, uid: string, students: any[], onSave: (list: number[], stu: string[]) => Promise<void>) {
+    const cur = new Set(meta.assign?.[uid] || []); const curStu = new Set(meta.students?.[uid] || []);
     const m = document.createElement('div'); m.className = 'osm-modal';
     m.innerHTML = `<div class="osm-modal-card">
       <h3>Which questions are yours?</h3>
@@ -525,9 +528,17 @@ function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: n
       <label>to <select id="osm-to">${paper.questions.map((q, i) => `<option value="${i}" ${i === paper.questions.length - 1 ? 'selected' : ''}>${esc(q.questionNumber || i + 1)}</option>`).join('')}</select></label>
       <button class="osm-btn small" id="osm-rng">Select range</button> <button class="osm-btn small" id="osm-none">Clear</button></div>
       <div class="osm-checks">${paper.questions.map((q, i) => `<label class="osm-check"><input type="checkbox" data-i="${i}" ${cur.has(i) ? 'checked' : ''}> ${esc(q.questionNumber || i + 1)}<small>${fmt1(qMax(q))}</small></label>`).join('')}</div>
+      <details class="osm-stu-det" ${curStu.size ? 'open' : ''}><summary>My students (optional)</summary>
+        <p class="osm-sub">Only needed when you and another teacher split the <b>class</b> between you (each marks different students). Leave all unticked to mark every student. Teachers who share the questions of one paper do not need this.</p>
+        <div class="osm-range"><button class="osm-btn small" id="osm-stu-all">Select all</button> <button class="osm-btn small" id="osm-stu-none">Clear</button></div>
+        <div class="osm-checks osm-stu-checks">${students.map((st: any) => `<label class="osm-check"><input type="checkbox" data-u="${esc(st.uid)}" ${curStu.has(st.uid) ? 'checked' : ''}> ${esc(st.name || '')}<small>${esc(st.rollNumber || '')}</small></label>`).join('')}</div>
+      </details>
       <div class="osm-actions"><button class="osm-btn" id="osm-m-cancel">Cancel</button><button class="osm-btn primary" id="osm-m-save">Save</button></div></div>`;
     document.body.appendChild(m);
-    const boxes = () => Array.from(m.querySelectorAll<HTMLInputElement>('.osm-check input'));
+    const sboxes = () => Array.from(m.querySelectorAll<HTMLInputElement>('.osm-stu-checks input'));
+    m.querySelector('#osm-stu-all')!.addEventListener('click', () => sboxes().forEach(c => c.checked = true));
+    m.querySelector('#osm-stu-none')!.addEventListener('click', () => sboxes().forEach(c => c.checked = false));
+    const boxes = () => Array.from(m.querySelectorAll<HTMLInputElement>('.osm-checks:not(.osm-stu-checks) input'));
     m.querySelector('#osm-rng')!.addEventListener('click', () => {
         let a = Number((m.querySelector('#osm-from') as HTMLSelectElement).value), b = Number((m.querySelector('#osm-to') as HTMLSelectElement).value);
         if (a > b) [a, b] = [b, a]; boxes().forEach(c => { const i = Number(c.dataset.i); if (i >= a && i <= b) c.checked = true; });
@@ -536,7 +547,8 @@ function openAssignModal(paper: Paper, meta: Meta, uid: string, onSave: (list: n
     m.querySelector('#osm-m-cancel')!.addEventListener('click', () => m.remove());
     m.querySelector('#osm-m-save')!.addEventListener('click', async () => {
         const list = boxes().filter(c => c.checked).map(c => Number(c.dataset.i));
-        try { await onSave(list); m.remove(); toast('Saved.', 'success'); } catch (e: any) { toast('Could not save: ' + e.message, 'error'); }
+        const stu = sboxes().filter(c => c.checked).map(c => c.dataset.u!);
+        try { await onSave(list, stu); m.remove(); toast('Saved.', 'success'); } catch (e: any) { toast('Could not save: ' + e.message, 'error'); }
     });
 }
 
@@ -1441,6 +1453,7 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-table tr.osm-dim{opacity:.5}.osm-stu-det{margin:10px 0;border:1px solid var(--osm-line,#e3e6f3);border-radius:10px;padding:8px 12px}.osm-stu-det summary{cursor:pointer;font-weight:600}.osm-stu-checks{max-height:200px;overflow:auto}
 .osm-attn{animation:osmattn 1.4s ease-in-out infinite}@keyframes osmattn{0%,100%{box-shadow:0 0 0 0 rgba(37,117,252,.55)}50%{box-shadow:0 0 0 8px rgba(37,117,252,0)}}
 .osm-pickbanner{margin:10px 0;padding:9px 13px;border-radius:10px;background:#fff6df;border:1.5px solid #e8a100;color:#6f4700;font-size:.85rem}
 .osm-rb.mine{box-shadow:0 0 0 2px #2575fc;font-weight:800}.osm-rb.notmine{opacity:.45}
