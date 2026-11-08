@@ -321,6 +321,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
         const pSnaps: any[] = await Promise.all(roster.students.map((s: any) => subRef(paper, s.uid).get().catch(() => null)));
         parents = new Map(); roster.students.forEach((s: any, i: number) => { if (pSnaps[i]?.exists) parents.set(s.uid, pSnaps[i].data()); });
     }
+    let autoAssigned = false;
     async function render() {
         const body = el.querySelector('.osm-body') as HTMLElement | null; if (!body) return;
         const scroll = (el as HTMLElement).scrollTop;
@@ -337,6 +338,13 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
         const publishedN = rows.filter(r => r.st.code === 'published').length;
         const toPublish = rows.filter(r => r.st.code === 'analysed').map(r => r.s.uid);
         const allReady = withSheets.length > 0 && withSheets.every(r => ['ready', 'analysed', 'published'].includes(r.st.code));
+        // One teacher on this subject: every question is theirs, picked and saved automatically (nothing to choose).
+        const multiTeacher = teachers.length > 1;
+        if (!multiTeacher && paper.questions.length && !(meta.assign?.[me.uid] || []).length && !autoAssigned) {
+            autoAssigned = true;
+            const all = paper.questions.map((_, i) => i);
+            try { await metaRef(paper).set({ assign: { [me.uid]: all } }, { merge: true }); meta.assign = { ...(meta.assign || {}), [me.uid]: all }; } catch (e) { console.warn('[osm] auto-assign', e); }
+        }
         const myAssign = meta.assign?.[me.uid] || [];
         body.innerHTML = `
           <div class="osm-toolbar">
@@ -348,10 +356,11 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             </div>
             <div class="osm-toolbar-btns">
               ${toPublish.length ? `<button class="osm-btn primary" id="osm-pub-all">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
-              <button class="osm-btn" id="osm-assign" title="Pick which questions you will mark, if co-teachers split the paper">${ICON.user}<span>My questions${myAssign.length ? ` (${myAssign.length})` : ''}</span></button>
+              ${multiTeacher ? `<button class="osm-btn ${myAssign.length ? '' : 'primary osm-attn'}" id="osm-assign" title="Several teachers mark this paper: choose which questions are yours">${ICON.user}<span>${myAssign.length ? `My questions (${myAssign.length})` : 'Choose my questions'}</span></button>` : ''}
               <button class="osm-btn" id="osm-howto" title="A quick walkthrough for teachers">?<span>How to mark</span></button>
             </div>
           </div>
+          ${multiTeacher && !myAssign.length ? `<div class="osm-pickbanner">Several teachers mark this paper. <b>First choose your questions</b> (“Choose my questions”), so you are only asked about your own.</div>` : ''}
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc, parent }) => `<tr>
             <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
@@ -364,7 +373,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
         body.querySelector('#osm-howto')?.addEventListener('click', () => openTour());
-        body.querySelector('#osm-assign')!.addEventListener('click', () => openAssignModal(paper, meta, me.uid, async (list) => {
+        body.querySelector('#osm-assign')?.addEventListener('click', () => openAssignModal(paper, meta, me.uid, async (list) => {
             await metaRef(paper).set({ assign: { [me.uid]: list } }, { merge: true });
             await reload(); await render();
         }));
@@ -694,6 +703,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
 
     const myIdx = new Set<number>(meta.assign?.[me.uid] || []);
     const hasAssign = myIdx.size > 0;
+    const multiT = teachers.length > 1;   // 'your questions' signals only matter when teachers share the paper
+    const showMine = hasAssign && multiT;
     let unlockAll = !hasAssign;
     const pos = order.indexOf(studentUid);
     const inks: Record<string, Record<string, InkStroke[]>> = {};   // teacherUid -> page -> strokes
@@ -709,9 +720,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <button class="osm-btn ghost" id="osm-close">${ICON.back}<span>Papers</span></button>
           <div class="osm-titlebox"><div class="osm-title">${esc(doc.studentName || stu?.name || '')} <span class="osm-sub">Roll ${esc(doc.rollNumber || stu?.rollNumber || '')}</span></div><div class="osm-sub">${esc(paper.title)}</div></div>
           <div class="osm-tools">
-            <span class="osm-inkstat saved" id="osm-ready" style="display:none">✔ Ready for analysis</span><span class="osm-inkstat" id="osm-ink-status" title="Every change is saved"></span>
-            <button class="osm-btn small" id="osm-tour" title="How to mark: a quick walkthrough">?<span>How to mark</span></button>
             <button class="osm-btn small" id="osm-hist" title="Everything changed on this sheet: who, what, which question, when">${ICON.msg}<span>History</span></button>
+            <span class="osm-inkstat saved" id="osm-ready" style="display:none">✔ Ready for analysis</span><span class="osm-inkstat" id="osm-ink-status" title="Every change is saved"></span>
           </div>
         </div>
         <div class="osm-desk-main">
@@ -1141,17 +1151,17 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           <div class="osm-score"><div class="osm-score-top"><div class="osm-score-num">${fmt1(sc.total)}<small> / ${dt || '—'}</small></div>
             <div class="osm-sub"><span id="osm-marked">${sc.marked}/${sc.count}</span> marked · <span id="osm-save" class="osm-save"></span></div></div>
             <div class="osm-bar"><i style="width:${dt ? Math.min(100, sc.total / dt * 100) : 0}%"></i></div>
-            ${hasAssign ? `<div class="osm-mine" id="osm-mine"></div>` : ''}</div>
-          ${hasAssign ? `<label class="osm-unlock"><input type="checkbox" id="osm-unlock" ${unlockAll ? 'checked' : ''}> Also let me edit other teachers' questions</label>` : ''}
+            ${showMine ? `<div class="osm-mine" id="osm-mine"></div>` : ''}${multiT && !hasAssign ? `<div class="osm-pickbanner" style="margin:6px 0 0">Choose your questions first: go back to the paper and press <b>Choose my questions</b>.</div>` : ''}</div>
+          ${showMine ? `<label class="osm-unlock"><input type="checkbox" id="osm-unlock" ${unlockAll ? 'checked' : ''}> Also let me edit other teachers' questions</label>` : ''}
           <div class="osm-qwrap">
-          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${hasAssign ? (myIdx.has(i) ? 'mine' : 'notmine') : ''}" data-i="${i}" style="--c:${qColor(m, qMax(q))}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
+          <nav class="osm-rail" id="osm-rail" title="Jump to a question">${paper.questions.map((q, i) => { const m = doc.marks?.[qk(i)]; return `<button class="osm-rb ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${showMine ? (myIdx.has(i) ? 'mine' : 'notmine') : ''}" data-i="${i}" style="--c:${qColor(m, qMax(q))}">${esc(q.questionNumber || i + 1)}</button>`; }).join('')}</nav>
           <div class="osm-qs" id="osm-qs">
           ${paper.questions.map((q, i) => {
               const m = doc.marks?.[qk(i)]; const mine = editable(i); const loser = sc.losers.has(q.questionNumber || String(i + 1));
               const max = qMax(q);
               return `<div class="osm-q ${mine ? '' : 'other'} ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${qColor(m, max)}">
                 <div class="osm-q-row">
-                  <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${hasAssign && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}</div>
+                  <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${showMine && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}</div>
                   <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
                   <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m && !m.na ? esc(Number(m.v)) : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
                   <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
@@ -1261,7 +1271,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     }
     // "your part": how many of YOUR questions are marked, and whether you have clicked Completed (your name turns green only then)
     function updateMine() {
-        const el = sideEl.querySelector('#osm-mine') as HTMLElement | null; if (!el || !hasAssign) return;
+        const el = sideEl.querySelector('#osm-mine') as HTMLElement | null; if (!el || !showMine) return;
         const mine = [...myIdx]; const marked = mine.filter(i => doc.marks?.[qk(i)] !== undefined).length; const done = !!doc.done?.[me.uid];
         el.className = 'osm-mine ' + (done ? 'ok' : marked === mine.length ? 'ready' : '');
         el.innerHTML = `<span><b>Your questions:</b> ${marked} of ${mine.length} marked</span><span>${done ? '✓ Completed' : marked === mine.length ? 'All marked — click <b>Completed</b>' : 'not completed yet'}</span>`;
@@ -1334,8 +1344,6 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     updateMine();
     const onSync = () => renderSync(); ob.subs.add(onSync); stopListeners.push(() => ob.subs.delete(onSync)); renderSync();
     desk.querySelector('#osm-hist')!.addEventListener('click', () => openHistory());
-    desk.querySelector('#osm-tour')!.addEventListener('click', () => openTour());
-    try { if (!localStorage.getItem('osm-tour-seen')) setTimeout(() => openTour(), 600); } catch { /* */ }
     // History: every confirmed change on this sheet (marks, reason notes, feedback edits, annotations), by every teacher; AI feedback is listed too.
     async function openHistory() {
         document.querySelectorAll('.osm-hist-back').forEach(n => n.remove());
@@ -1433,6 +1441,8 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-desk-top .osm-btn.small{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
 .osm-inkstat{font-size:.78rem;padding:5px 11px;border-radius:99px;background:rgba(255,255,255,.16);color:#fff;white-space:nowrap}.osm-inkstat.saved,.osm-inkstat.idle{background:rgba(46,204,113,.28)}.osm-inkstat.dirty,.osm-inkstat.saving{background:rgba(255,193,7,.35)}.osm-inkstat.error{background:#e74c3c}
 .osm-desk-main{flex:1;display:flex;min-height:0}
+.osm-attn{animation:osmattn 1.4s ease-in-out infinite}@keyframes osmattn{0%,100%{box-shadow:0 0 0 0 rgba(37,117,252,.55)}50%{box-shadow:0 0 0 8px rgba(37,117,252,0)}}
+.osm-pickbanner{margin:10px 0;padding:9px 13px;border-radius:10px;background:#fff6df;border:1.5px solid #e8a100;color:#6f4700;font-size:.85rem}
 .osm-rb.mine{box-shadow:0 0 0 2px #2575fc;font-weight:800}.osm-rb.notmine{opacity:.45}
 .osm-mine{display:flex;justify-content:space-between;gap:8px;margin-top:5px;padding:4px 9px;border-radius:8px;background:#eef3ff;color:#2a4fb0;font-size:.72rem}.osm-mine.ready{background:#fff6df;color:#8a5a00}.osm-mine.ok{background:#e8f6ee;color:#17613a}
 .osm-tour-back{position:fixed;inset:0;z-index:100003;background:rgba(15,20,40,.6);display:flex;align-items:center;justify-content:center;padding:16px}
