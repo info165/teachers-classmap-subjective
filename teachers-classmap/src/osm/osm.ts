@@ -285,8 +285,9 @@ async function publishOne(paper: Paper, uid: string) {
     const forStudent: any = { ...s.data(), questionWiseReport: r.data().questionWiseReport || [], submissionDocId: uid, assessmentId: paper.id, assessmentTitle: paper.title, subject: paper.subject, className: paper.className, section: paper.section, gradingTimestamp: new Date().toISOString() };
     delete forStudent.published;
     if (Array.isArray(forStudent.answerSheetImageUrls) && forStudent.answerSheetImageUrls.length) forStudent.answerSheetImageUrls = await bakedSheetUrls(paper, uid, forStudent.answerSheetImageUrls);
+    if (Array.isArray(forStudent.answerSheetImageUrls)) forStudent.publishSheetUrls = forStudent.answerSheetImageUrls;
     const batch = B.db.batch();
-    batch.update(ref, { published: true });
+    batch.update(ref, { published: true, ...(forStudent.publishSheetUrls ? { publishSheetUrls: forStudent.publishSheetUrls } : {}) });
     const target = await publishTarget(paper, uid);
     if (paper.previewCopyOf) forStudent.assessmentTitle = `${paper.title} — ${s.data().studentName || ''}`.trim();
     batch.set(B.db.collection('studentAssessments').doc(target).collection('assessments').doc(`${paper.id}_${uid}`), plain(forStudent));

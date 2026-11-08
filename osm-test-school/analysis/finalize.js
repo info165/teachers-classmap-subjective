@@ -154,6 +154,14 @@ const level=p=>p>=85?'Strong':p>=70?'Good':p>=50?'Developing':'Needs work';
     answerSheetImageUrls:s.pages.map(p=>p.url),pencilAnnotations:pencil,overallFeedback:overall,analysis,
     teacherVerified:true,teacherVerifications:ver,published:false,source:'teacher_marking'});
   await sub.collection('detail').doc('report').set({questionWiseReport:reports,fullOcrText:''});
+  // Sheet pictures WITH the teachers' pen marks drawn on (made by export.js). Stored on the report so that ANY publish path (teacher or admin) can give the student the marked sheets.
+  try{ const bucket=admin.storage().bucket(); const crypto=require('crypto'); const urls=[]; let any=false;
+    for(let i=0;i<s.pages.length;i++){ const pg=s.pages[i]; const mf=pg.markedFile&&path.join(dir,pg.markedFile);
+      if(mf&&fs.existsSync(mf)){ const dest=`gradedReports/${P.owner}/${P.id}/${s.studentUid}/published_p${i+1}_${Date.now().toString(36)}.jpg`; const tok=crypto.randomUUID();
+        await bucket.upload(mf,{destination:dest,metadata:{contentType:'image/jpeg',metadata:{firebaseStorageDownloadTokens:tok}}}); urls.push(`https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(dest)}?alt=media&token=${tok}`); any=true; }
+      else urls.push(pg.url); }
+    if(any) await sub.update({publishSheetUrls:urls});
+  }catch(e){ console.log('  (could not prepare marked sheet pictures:',e.message+')'); }
   // history line: the AI wrote feedback/analysis only; marks are exactly what the teachers entered
   await sub.collection('detail').doc('osmLog_AI').set({teacherUid:'AI',teacherName:'AI',updatedAt:Date.now(),events:admin.firestore.FieldValue.arrayUnion({id:'ai'+Date.now().toString(36),t:Date.now(),by:'AI',n:'AI',type:'ai',text:'AI wrote the feedback and the learning analysis. AI never changes marks: every mark is exactly what the teachers entered.'})},{merge:true});
   console.log('  wrote',s.roll,s.name,`${total}/${P.declaredTotal}`,`concepts:${analysis.conceptMastery.length} topics:${analysis.topicMastery.length} strong:${analysis.strengths.length} weak:${analysis.weaknesses.length}`);
