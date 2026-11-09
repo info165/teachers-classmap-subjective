@@ -51,6 +51,11 @@ function busy(show: boolean, text = 'Working…') {
 // Sheet uploads run in the background, one job per student, so a teacher can start the next student straight away.
 type UpJob = { stu: any; files: File[]; mode: 'add' | 'replace'; state: 'run' | 'ok' | 'err'; done: number; total: number; msg: string };
 const upJobs = new Map<string, UpJob>();
+// How the student list is ordered. Remembered on this device; default is by roll number so every teacher sees the same order.
+type SortKey = 'roll' | 'name' | 'sheet' | 'marks' | 'status';
+let sortKey: SortKey = 'roll', sortDir: 1 | -1 = 1;
+try { const v = JSON.parse(localStorage.getItem('osm-sort-v1') || 'null'); if (v && ['roll', 'name', 'sheet', 'marks', 'status'].includes(v.k)) { sortKey = v.k; sortDir = v.d === -1 ? -1 : 1; } } catch { /* ignore */ }
+const STATUS_RANK: Record<string, number> = { nosheet: 0, new: 1, prog: 2, ready: 3, analysed: 4, published: 5 };
 let upPaint: ((uid: string) => void) | null = null;
 if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if ([...upJobs.values()].some(j => j.state === 'run')) { e.preventDefault(); e.returnValue = ''; } });
 export function initOsm(bridge: OsmBridge) { B = bridge; injectStyle(); }
@@ -340,6 +345,11 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             const sc = scoreFor(paper, d?.marks);
             return { s, d, st, sc, parent };
         });
+        {   // stable, same for every teacher: chosen column, then roll number, then name
+            const rollOf = (r: any) => String(r.s.rollNumber ?? ''); const nm = (r: any) => String(r.s.name || '');
+            const val = (r: any): number | string => sortKey === 'name' ? nm(r).toLowerCase() : sortKey === 'sheet' ? (r.d?.pages?.length || 0) : sortKey === 'marks' ? (r.d?.pages?.length ? Number(r.parent?.overallScore ?? r.sc.total) || 0 : -1) : sortKey === 'status' ? (STATUS_RANK[r.st.code] ?? 0) : rollOf(r);
+            rows.sort((a: any, b: any) => { const x = val(a), y = val(b); const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true }); return (c * sortDir) || rollOf(a).localeCompare(rollOf(b), undefined, { numeric: true }) || nm(a).localeCompare(nm(b)); });
+        }
         const withSheets = rows.filter(r => r.d?.pages?.length);
         const readyN = rows.filter(r => r.st.code === 'ready').length;
         const analysedN = rows.filter(r => r.st.code === 'analysed' || r.st.code === 'published').length;
@@ -369,13 +379,14 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
               <div class="osm-kpi"><b>${publishedN}</b><span>published</span></div>
             </div>
             <div class="osm-toolbar-btns">
+              <span class="osm-sort"><label for="osm-sortsel">Sort by</label><select id="osm-sortsel">${([['roll', 'Roll'], ['name', 'Student name'], ['sheet', 'Answer sheet'], ['marks', 'Marks'], ['status', 'Status']] as [string, string][]).map(([k, l]) => `<option value="${k}" ${sortKey === k ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="osm-btn small" id="osm-sortdir" title="Reverse the order">${sortDir === 1 ? '↑ A–Z / low–high' : '↓ Z–A / high–low'}</button></span>
               ${multiTeacher ? `<button class="osm-btn ${myAssign.length ? '' : 'primary osm-attn'}" id="osm-assign" title="Several teachers mark this paper: choose which questions are yours">${ICON.user}<span>${myAssign.length ? `My questions (${myAssign.length})` : 'Choose my questions'}</span></button>` : ''}
               <button class="osm-btn" id="osm-howto" title="A quick walkthrough for teachers">?<span>How to mark</span></button>
               ${toPublish.length ? `<button class="osm-btn osm-pubsoft" id="osm-pub-all" title="Publishes every analysed report on this paper. Can be done later.">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
             </div>
           </div>
           ${multiTeacher && !myAssign.length ? `<div class="osm-pickbanner">Several teachers mark this paper. <b>First choose your questions</b> (“Choose my questions”), so you are only asked about your own.</div>` : ''}
-          <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+          <div class="osm-table-wrap"><table class="osm-table"><thead><tr>${([['roll', 'Roll'], ['name', 'Student'], ['sheet', 'Answer sheet'], ['marks', 'Marks']] as [string, string][]).map(([k, l]) => `<th class="osm-sortable" data-sort="${k}">${l}${sortKey === k ? (sortDir === 1 ? ' ▲' : ' ▼') : ''}</th>`).join('')}<th>Teachers done</th><th class="osm-sortable" data-sort="status">Status${sortKey === 'status' ? (sortDir === 1 ? ' ▲' : ' ▼') : ''}</th><th>Actions</th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc, parent }) => `<tr class="${myStu.length && !myStu.includes(s.uid) ? 'osm-dim' : ''}">
             <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
             <td data-upcell="${esc(s.uid)}">${upCell(s, d)}</td>
@@ -386,6 +397,10 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           </tr>`).join('')}
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
+        const setSort = (k: SortKey, d?: 1 | -1) => { sortDir = d ?? (k === sortKey ? (sortDir === 1 ? -1 : 1) : 1); sortKey = k; try { localStorage.setItem('osm-sort-v1', JSON.stringify({ k: sortKey, d: sortDir })); } catch { /* ignore */ } render(); };
+        body.querySelector<HTMLSelectElement>('#osm-sortsel')?.addEventListener('change', e => setSort((e.target as HTMLSelectElement).value as SortKey, 1));
+        body.querySelector('#osm-sortdir')?.addEventListener('click', () => setSort(sortKey, sortDir === 1 ? -1 : 1));
+        body.querySelectorAll<HTMLElement>('th.osm-sortable').forEach(th => th.addEventListener('click', () => setSort(th.dataset.sort as SortKey)));
         body.querySelector('#osm-howto')?.addEventListener('click', () => openTour());
         body.querySelector('#osm-assign')?.addEventListener('click', () => openAssignModal(paper, meta, me.uid, roster.students, async (list, stu) => {
             await metaRef(paper).set({ assign: { [me.uid]: list }, students: { [me.uid]: stu } }, { merge: true });
@@ -1460,6 +1475,7 @@ body.osm-active{overflow:hidden}
 .osm-table th{background:var(--osm-soft);position:sticky;top:0;font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;color:#5b6b86;font-weight:600}.osm-nm{font-weight:500}.osm-pgs{font-weight:500}
 .osm-kpis{display:flex;gap:12px}.osm-kpi{background:var(--osm-card);border:1px solid var(--osm-line);border-radius:16px;padding:10px 20px;display:flex;flex-direction:column;box-shadow:var(--osm-shadow)}.osm-kpi b{font-size:1.5rem;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1.2}.osm-kpi b small{font-size:.9rem;color:var(--osm-muted);-webkit-text-fill-color:var(--osm-muted);font-weight:500}.osm-kpi span{font-size:.76rem;color:var(--osm-muted)}
 .osm-upst{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.8rem}.osm-upst.run{color:#2457c5;font-weight:600}.osm-upst.err{color:#c0262d}.osm-upbar{width:90px;height:7px;border-radius:99px;background:#dbe5fb;overflow:hidden}.osm-upbar i{display:block;height:100%;background:#2575fc;transition:width .3s}.osm-uperr{width:100%;font-size:.72rem;color:#c0262d;font-weight:400}.osm-pgs.ok{color:#1c7c46;font-weight:600}
+.osm-sort{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;color:#5b6b86}.osm-sort select{border:1px solid #cfd8e6;border-radius:8px;padding:5px 8px;background:#fff;font:inherit;color:#243049}.osm-table th.osm-sortable{cursor:pointer;user-select:none}.osm-table th.osm-sortable:hover{color:#2575fc}
 .osm-badge{padding:3px 11px;border-radius:99px;font-size:.74rem;font-weight:600;background:#eceff5;color:#5b6b86;white-space:nowrap}.osm-badge.ready{background:#d9f3e6;color:var(--osm-ok)}.osm-badge.prog{background:#fff0d6;color:var(--osm-warn)}.osm-badge.nosheet{background:#f1f2f6;color:#9aa3b2}
 .osm-chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:.74rem;border:1px solid var(--osm-line);color:var(--osm-muted);margin:1px 4px 1px 0}.osm-chip.on{background:#d9f3e6;color:var(--osm-ok);border-color:#b8e6cd}
 button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;font-size:.82rem;margin-left:6px;text-decoration:underline;font-family:inherit;padding:0}.osm-muted{color:var(--osm-muted)}
