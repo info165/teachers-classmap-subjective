@@ -1298,7 +1298,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         if (isNaN(v) || v < 0) v = 0; if (max > 0 && v > max) { v = max; toast(`Q${paper.questions[i].questionNumber || i + 1} is out of ${fmt1(max)} — set to ${fmt1(max)}.`, 'info'); }
         if (document.activeElement !== inp) inp.value = String(v);
         const prevV = doc.marks?.[qk(i)]?.na ? 'na' : doc.marks?.[qk(i)]?.v;
-        const entry = { v, by: me.uid, n: me.name, t: Date.now() };
+        const entry = { v, na: false, by: me.uid, n: me.name, t: Date.now() };   // na:false overwrites an older 'not attempted' flag when the entry is merged in the cloud
         (doc.marks ||= {})[qk(i)] = entry;
         // Editing a mark after "Completed" reopens this teacher's own done flag, so it can never be stale.
         const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
