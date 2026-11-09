@@ -48,6 +48,11 @@ function busy(show: boolean, text = 'Working…') {
     if (!o) { o = document.createElement('div'); o.id = 'osm-busy'; o.innerHTML = '<div class="osm-spin"></div><div class="osm-busy-t"></div>'; document.body.appendChild(o); }
     (o.querySelector('.osm-busy-t') as HTMLElement).textContent = text;
 }
+// Sheet uploads run in the background, one job per student, so a teacher can start the next student straight away.
+type UpJob = { stu: any; files: File[]; mode: 'add' | 'replace'; state: 'run' | 'ok' | 'err'; done: number; total: number; msg: string };
+const upJobs = new Map<string, UpJob>();
+let upPaint: ((uid: string) => void) | null = null;
+if (typeof window !== 'undefined') window.addEventListener('beforeunload', e => { if ([...upJobs.values()].some(j => j.state === 'run')) { e.preventDefault(); e.returnValue = ''; } });
 export function initOsm(bridge: OsmBridge) { B = bridge; injectStyle(); }
 
 // ───────────────────────── types ─────────────────────────
@@ -349,6 +354,12 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             try { await metaRef(paper).set({ assign: { [me.uid]: all } }, { merge: true }); meta.assign = { ...(meta.assign || {}), [me.uid]: all }; } catch (e) { console.warn('[osm] auto-assign', e); }
         }
         const myAssign = meta.assign?.[me.uid] || []; const myStu = meta.students?.[me.uid] || [];
+        const upCell = (s: any, d: any): string => {
+            const j = upJobs.get(paper.id + '|' + s.uid);
+            if (j && j.state === 'run') { const pct = j.total ? Math.round(j.done / j.total * 100) : 4; return `<div class="osm-upst run"><div class="osm-upbar"><i style="width:${pct}%"></i></div><span>${j.total ? `Uploading ${j.done} of ${j.total}` : esc(j.msg)}…</span></div>`; }
+            if (j && j.state === 'err') return `<div class="osm-upst err"><b>✕ Upload failed</b> <button class="osm-link osm-retry" data-uid="${esc(s.uid)}">Retry</button> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Choose again</button><div class="osm-uperr">${esc(j.msg)}</div></div>`;
+            return d?.pages?.length ? `<span class="osm-pgs ok">✓ ${d.pages.length} page${d.pages.length > 1 ? 's' : ''}</span> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Add / replace</button>` : `<button class="osm-btn small osm-up" data-uid="${esc(s.uid)}">${ICON.upload}<span>Upload sheet</span></button>`;
+        };
         body.innerHTML = `
           <div class="osm-toolbar">
             <div class="osm-kpis">
@@ -367,7 +378,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr><th>Roll</th><th>Student</th><th>Answer sheet</th><th>Marks</th><th>Teachers done</th><th>Status</th><th>Actions</th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc, parent }) => `<tr class="${myStu.length && !myStu.includes(s.uid) ? 'osm-dim' : ''}">
             <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
-            <td>${d?.pages?.length ? `<span class="osm-pgs">${d.pages.length} page${d.pages.length > 1 ? 's' : ''}</span> <button class="osm-link osm-up" data-uid="${esc(s.uid)}">Add / replace</button>` : `<button class="osm-btn small osm-up" data-uid="${esc(s.uid)}">${ICON.upload}<span>Upload sheet</span></button>`}</td>
+            <td data-upcell="${esc(s.uid)}">${upCell(s, d)}</td>
             <td>${d?.pages?.length ? `<b>${fmt1(parent?.overallScore ?? sc.total)}</b> / ${declaredTotal(paper) || '—'}` : '—'}</td>
             <td>${teachers.map(t => `<span class="osm-chip ${st.doneBy.includes(t.uid) ? 'on' : ''}" title="${esc(t.name)}">${esc(shortName(t.name, teachers))}${st.doneBy.includes(t.uid) ? ' ✓' : ''}</span>`).join('')}</td>
             <td><span class="osm-badge ${st.code}"><i></i>${esc(st.label)}</span></td>
@@ -395,10 +406,23 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             if (!confirm('Unpublish this report? The student will no longer see it. Nothing is deleted.')) return;
             busyFlag = true; busy(true, 'Unpublishing…'); try { await unpublishOne(paper, b.dataset.uid!); await reload(); await render(); toast('Unpublished.', 'info'); } catch (e: any) { toast('Could not unpublish: ' + e.message, 'error'); } finally { busy(false); busyFlag = false; }
         }));
-        body.querySelectorAll<HTMLButtonElement>('.osm-up').forEach(b => b.addEventListener('click', () => {
-            const stu = roster.students.find((x: any) => x.uid === b.dataset.uid);
-            openUploadModal(paper, stu, docs.get(b.dataset.uid!)?.pages?.length || 0, async () => { busyFlag = true; try { await reload(); await render(); } finally { busyFlag = false; } });
-        }));
+        let refreshQ: Promise<void> = Promise.resolve();
+        const startUpload = (stu: any, files: File[], mode: 'add' | 'replace') => {
+            const key = paper.id + '|' + stu.uid; const job: UpJob = { stu, files, mode, state: 'run', done: 0, total: 0, msg: 'Preparing pages' }; upJobs.set(key, job); upPaint?.(stu.uid);
+            saveSheets(paper, stu, files, mode, p => { Object.assign(job, p); upPaint?.(stu.uid); }).then(() => {
+                if (job.state !== 'ok') return;
+                refreshQ = refreshQ.then(async () => { try { await reload(); upJobs.delete(key); if (document.getElementById('osm-root')) await render(); } catch { upJobs.delete(key); } });
+            });
+        };
+        const wireUp = (root: ParentNode) => {
+            root.querySelectorAll<HTMLButtonElement>('.osm-up').forEach(b => b.addEventListener('click', () => {
+                const stu = roster.students.find((x: any) => x.uid === b.dataset.uid);
+                openUploadModal(paper, stu, docs.get(b.dataset.uid!)?.pages?.length || 0, (files, mode) => startUpload(stu, files, mode));
+            }));
+            root.querySelectorAll<HTMLButtonElement>('.osm-retry').forEach(b => b.addEventListener('click', () => { const j = upJobs.get(paper.id + '|' + b.dataset.uid); if (j) startUpload(j.stu, j.files, j.mode); }));
+        };
+        wireUp(body);
+        upPaint = (uid: string) => { const td = document.querySelector(`#osm-root td[data-upcell="${CSS.escape(uid)}"]`); const r = rows.find(x => x.s.uid === uid); if (td && r) { td.innerHTML = upCell(r.s, r.d); wireUp(td); } };
         // keep the explicit readiness flag in sync (idempotent) so analysis can find ready papers fast
         if (readFailed && !warnedRead) { warnedRead = true; toast('Some students could not be loaded — go back and open the paper again before relying on the status.', 'error'); }
         if (!readFailed && allReady !== !!meta.readyForAnalysis) {
@@ -416,7 +440,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
 
 // Upload dialog: PDF (split into page images, exactly like Exams) or photos. When a sheet already exists the teacher
 // must choose: add these pages to the end, or replace the whole sheet.
-function openUploadModal(paper: Paper, stu: any, existing: number, onDone: () => Promise<void>) {
+function openUploadModal(paper: Paper, stu: any, existing: number, onStart: (files: File[], mode: 'add' | 'replace') => void) {
     const m = document.createElement('div'); m.className = 'osm-modal';
     m.innerHTML = `<div class="osm-modal-card">
       <h3>${existing ? 'Add or replace' : 'Upload'} answer sheet</h3>
@@ -446,8 +470,7 @@ function openUploadModal(paper: Paper, stu: any, existing: number, onDone: () =>
         const mode = (m.querySelector('input[name="osm-mode"]:checked') as HTMLInputElement | null)?.value === 'replace' ? 'replace' : 'add';
         if (mode === 'replace' && !confirm(`Replace the whole sheet for ${stu?.name || 'this student'}? The ${existing} current page(s) will be removed from this paper and pen marks on them are deleted. Marks already given are kept.`)) return;
         go.disabled = true; m.remove();
-        await saveSheets(paper, stu, files, mode);
-        await onDone();
+        onStart(files, mode);   // runs in the background; the row shows its own progress
     });
 }
 
@@ -461,14 +484,16 @@ function alertBox(title: string, html: string) {
 }
 // Every page is uploaded, checked against what storage actually received, and retried if the network hiccups.
 // All-or-nothing: if even one page cannot be stored, NOTHING is saved for the student and the teacher is told exactly which pages to upload again.
-async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | 'replace') {
+async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | 'replace', prog?: (p: Partial<UpJob>) => void) {
+    const say = (t: string, done = 0, total = 0) => { if (prog) prog({ state: 'run', msg: t, done, total }); else busy(true, t); };
+    const fail = (title: string, html: string) => { if (prog) prog({ state: 'err', msg: title + ' — ' + html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() }); else alertBox(title, html); };
     const me = B.teacher()!; const studentUid = stu?.uid;
-    if (!navigator.onLine) { alertBox('No internet connection', 'You appear to be offline, so nothing was uploaded. Please reconnect and upload this student’s sheets again.'); return; }
-    busy(true, 'Preparing pages…');
+    if (!navigator.onLine) { fail('No internet connection', 'You appear to be offline, so nothing was uploaded. Please reconnect and upload this student’s sheets again.'); return; }
+    say('Preparing pages');
     try {
         const expanded: File[] = [];
         for (const f of files) { if (f.type === 'application/pdf') expanded.push(...await B.pdfToImages(f)); else expanded.push(f); }
-        if (!expanded.length) { alertBox('Nothing to upload', 'No pages were found in the file(s) you chose.'); return; }
+        if (!expanded.length) { fail('Nothing to upload', 'No pages were found in the file(s) you chose.'); return; }
         const total = expanded.length; let done = 0; const failed: { n: number; why: string }[] = [];
         const pages: ({ path: string; url: string } | null)[] = new Array(total).fill(null);
         const uploadOne = async (idx: number) => {
@@ -481,7 +506,7 @@ async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | '
                     const ref = B.storage.ref(path); await ref.put(up);
                     const meta = await ref.getMetadata();
                     if (Number(meta.size) !== up.size) throw new Error(`stored ${meta.size} of ${up.size} bytes`);   // a truncated upload is never accepted
-                    const url = await ref.getDownloadURL(); pages[idx] = { path, url }; done++; busy(true, `Uploaded page ${done} of ${total}…`); return;
+                    const url = await ref.getDownloadURL(); pages[idx] = { path, url }; done++; say('Uploading', done, total); return;
                 } catch (e: any) { lastErr = e; await new Promise(r => setTimeout(r, 800 * attempt)); }
             }
             failed.push({ n: idx + 1, why: lastErr?.message || 'network error' });
@@ -490,7 +515,7 @@ async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | '
         let next = 0; await Promise.all(Array.from({ length: Math.min(3, total) }, async () => { while (next < total) { const i = next++; await uploadOne(i); } }));
         if (failed.length) {
             failed.sort((a, b) => a.n - b.n);
-            alertBox('Upload incomplete — nothing was saved', `${failed.length} of ${total} page${total > 1 ? 's' : ''} could not be uploaded (page${failed.length > 1 ? 's' : ''} ${failed.map(f => f.n).join(', ')}). This is usually a network problem. <b>Please upload this student’s sheets again.</b> No partial sheet was saved for ${esc(stu?.name || 'this student')}.`);
+            fail('Upload incomplete — nothing was saved', `${failed.length} of ${total} page${total > 1 ? 's' : ''} could not be uploaded (page${failed.length > 1 ? 's' : ''} ${failed.map(f => f.n).join(', ')}). This is usually a network problem. <b>Please upload this student’s sheets again.</b> No partial sheet was saved for ${esc(stu?.name || 'this student')}.`);
             return;
         }
         const good = pages as { path: string; url: string }[];
@@ -512,10 +537,11 @@ async function saveSheets(paper: Paper, stu: any, files: File[], mode: 'add' | '
         // read it back: every uploaded page must now be on the student's sheet
         const back = (await stuRef(paper, studentUid).get()).data() || {}; const have = new Set((back.pages || []).map((x: any) => x.url));
         const lost = good.filter(g => !have.has(g.url)).length;
-        if (lost) { alertBox('Please check this upload', `${lost} page${lost > 1 ? 's were' : ' was'} not found after saving. Please upload this student’s sheets again.`); return; }
+        if (lost) { fail('Please check this upload', `${lost} page${lost > 1 ? 's were' : ' was'} not found after saving. Please upload this student’s sheets again.`); return; }
+        if (prog) prog({ state: 'ok', done: good.length, total: good.length, msg: 'Saved' });
         toast(mode === 'replace' ? `Sheet replaced — all ${good.length} page${good.length > 1 ? 's' : ''} stored and checked.` : `Added ${good.length} page${good.length > 1 ? 's' : ''} for ${stu?.name || 'student'} — all stored and checked (sheet now has ${(back.pages || []).length}).`, 'success');
-    } catch (e: any) { console.error('[osm] upload failed', e); alertBox('Upload failed — nothing was saved', `${esc(e.message || 'Unknown error')}. Please upload this student’s sheets again.`); }
-    finally { busy(false); }
+    } catch (e: any) { console.error('[osm] upload failed', e); fail('Upload failed — nothing was saved', `${esc(e.message || 'Unknown error')}. Please upload this student’s sheets again.`); }
+    finally { if (!prog) busy(false); }
 }
 
 function openAssignModal(paper: Paper, meta: Meta, uid: string, students: any[], onSave: (list: number[], stu: string[]) => Promise<void>) {
@@ -1433,6 +1459,7 @@ body.osm-active{overflow:hidden}
 .osm-table{width:100%;border-collapse:collapse;font-size:.88rem}.osm-table th,.osm-table td{padding:11px 14px;border-bottom:1px solid var(--osm-line);text-align:left;vertical-align:middle}.osm-table tbody tr:hover{background:#fafbff}.osm-table tbody tr:last-child td{border-bottom:0}
 .osm-table th{background:var(--osm-soft);position:sticky;top:0;font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;color:#5b6b86;font-weight:600}.osm-nm{font-weight:500}.osm-pgs{font-weight:500}
 .osm-kpis{display:flex;gap:12px}.osm-kpi{background:var(--osm-card);border:1px solid var(--osm-line);border-radius:16px;padding:10px 20px;display:flex;flex-direction:column;box-shadow:var(--osm-shadow)}.osm-kpi b{font-size:1.5rem;background:var(--osm-grad);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1.2}.osm-kpi b small{font-size:.9rem;color:var(--osm-muted);-webkit-text-fill-color:var(--osm-muted);font-weight:500}.osm-kpi span{font-size:.76rem;color:var(--osm-muted)}
+.osm-upst{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.8rem}.osm-upst.run{color:#2457c5;font-weight:600}.osm-upst.err{color:#c0262d}.osm-upbar{width:90px;height:7px;border-radius:99px;background:#dbe5fb;overflow:hidden}.osm-upbar i{display:block;height:100%;background:#2575fc;transition:width .3s}.osm-uperr{width:100%;font-size:.72rem;color:#c0262d;font-weight:400}.osm-pgs.ok{color:#1c7c46;font-weight:600}
 .osm-badge{padding:3px 11px;border-radius:99px;font-size:.74rem;font-weight:600;background:#eceff5;color:#5b6b86;white-space:nowrap}.osm-badge.ready{background:#d9f3e6;color:var(--osm-ok)}.osm-badge.prog{background:#fff0d6;color:var(--osm-warn)}.osm-badge.nosheet{background:#f1f2f6;color:#9aa3b2}
 .osm-chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:.74rem;border:1px solid var(--osm-line);color:var(--osm-muted);margin:1px 4px 1px 0}.osm-chip.on{background:#d9f3e6;color:var(--osm-ok);border-color:#b8e6cd}
 button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;font-size:.82rem;margin-left:6px;text-decoration:underline;font-family:inherit;padding:0}.osm-muted{color:var(--osm-muted)}
