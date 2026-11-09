@@ -31,7 +31,6 @@ export interface OsmBridge {
     typeset: (el: HTMLElement) => Promise<void> | void;
     orLosers: (reports: any[], questions: any[]) => Set<string>;
     backToClass: () => void;
-    transcribe: (audio: Blob) => Promise<string>;
     analysisPdf: (report: any, ctx: any, onProgress?: (t: string) => void) => Promise<void>;
 }
 
@@ -1369,43 +1368,31 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     renderSide();
     // 🎤 speak instead of typing: the browser's own speech recognition (asks for the microphone once). Works in every text box where feedback is written.
     {
-        // Records the voice and has the AI write it down (any language: English, Hindi, Bengali…). Does not depend on the browser's own speech service.
-        let mr: MediaRecorder | null = null; let recBtn: HTMLElement | null = null; let stream: MediaStream | null = null; let tick: any = null;
-        const MIC = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>';
-        const idleLabel = `${MIC}<span>Speak</span>`;
-        const cleanup = () => { clearInterval(tick); stream?.getTracks().forEach(t => t.stop()); stream = null; mr = null; };
+        const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition; let rec: any = null; let recBtn: HTMLElement | null = null;
+        const getLang = () => 'en-IN';   // English only
+        const stopRec = () => { try { rec?.stop(); } catch { /* */ } rec = null; if (recBtn) { recBtn.classList.remove('on'); const sp = recBtn.querySelector('span'); if (sp) sp.textContent = 'Speak'; } recBtn = null; };
+        const MIC = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>';
         const decorate = () => sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-reason,.osm-fbta,.osm-ovta').forEach(ta => {
             if (ta.parentElement?.classList.contains('osm-micwrap') || ta.disabled) return;
             const w = document.createElement('div'); w.className = 'osm-micwrap'; ta.parentElement!.insertBefore(w, ta); w.appendChild(ta);
-            w.insertAdjacentHTML('beforeend', `<button type="button" class="osm-mic" title="Speak instead of typing: click, talk, click again to stop">${idleLabel}</button>`);
-            const mic = w.querySelector('.osm-mic') as HTMLButtonElement;
+            w.insertAdjacentHTML('beforeend', `<button type="button" class="osm-mic" title="Speak instead of typing: click, talk, click again to stop">${MIC}<span>Speak</span></button>`);
+            const mic = w.querySelector('.osm-mic') as HTMLElement;
             mic.addEventListener('mousedown', e => e.preventDefault());
-            mic.addEventListener('click', async () => {
-                if (mr && recBtn === mic) { try { mr.stop(); } catch { /* */ } return; }   // second click: stop and write it down
-                if (mr) return;
-                if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { toast('Voice typing is not available in this browser. Please type here.', 'info'); return; }
-                try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-                catch (e: any) { toast(e?.name === 'NotAllowedError' || e?.name === 'SecurityError' ? 'Microphone is blocked. Click the lock icon in the address bar, allow the microphone for this site, then try again. (If ClassMap is opened inside another website, open teachers-classmap.web.app directly.)' : 'No microphone found.', 'error'); cleanup(); return; }
-                const chunks: Blob[] = []; const rec = new MediaRecorder(stream); mr = rec; recBtn = mic; mic.classList.add('on');
-                const t0 = Date.now(); const paint = () => { const sec = Math.floor((Date.now() - t0) / 1000); mic.innerHTML = `<span class="osm-recdot"></span><span>Stop · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}</span>`; }; paint(); tick = setInterval(paint, 500);
-                rec.ondataavailable = ev => { if (ev.data.size) chunks.push(ev.data); };
-                rec.onstop = async () => {
-                    const type = rec.mimeType || 'audio/webm'; cleanup(); mic.classList.remove('on'); recBtn = null;
-                    const blob = new Blob(chunks, { type });
-                    if (blob.size < 1500) { mic.innerHTML = idleLabel; toast('Did not hear anything. Please try again.', 'info'); return; }
-                    mic.disabled = true; mic.innerHTML = '<span class="osm-spin2"></span><span>Writing…</span>';
-                    try {
-                        const txt = (await B.transcribe(blob)).trim();
-                        if (txt) { ta.value = (ta.value ? ta.value.replace(/\s+$/, '') + ' ' : '') + txt; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.focus(); }
-                        else toast('Could not make out any words. Please try again.', 'info');
-                    } catch (e: any) { toast('Could not write down the voice (' + (e?.message || 'network') + '). Please try again or type.', 'error'); }
-                    finally { mic.disabled = false; mic.innerHTML = idleLabel; }
-                };
-                rec.start();
+            mic.addEventListener('click', () => {
+                if (rec && recBtn === mic) { stopRec(); return; }
+                stopRec();
+                if (!SR) { toast('Voice typing needs Chrome or Edge. Please type here, or open ClassMap in Chrome.', 'info'); return; }
+                const r = new SR(); r.lang = getLang(); r.continuous = true; r.interimResults = true; rec = r; recBtn = mic; mic.classList.add('on'); mic.querySelector('span')!.textContent = 'Stop';
+                const base = ta.value; let finalTxt = '';
+                r.onresult = (ev: any) => { let interim = ''; for (let k = ev.resultIndex; k < ev.results.length; k++) { const t = ev.results[k][0].transcript; if (ev.results[k].isFinal) finalTxt += (finalTxt && !/\s$/.test(finalTxt) ? ' ' : '') + t.trim(); else interim += t; }
+                    ta.value = (base ? base.replace(/\s+$/, '') + ' ' : '') + finalTxt + (interim ? (finalTxt ? ' ' : '') + interim : ''); ta.dispatchEvent(new Event('input', { bubbles: true })); };
+                r.onerror = (ev: any) => { if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') toast('Microphone is blocked. Click the lock icon in the address bar, allow the microphone for this site, then try again.', 'error'); else if (ev.error === 'network') toast('Voice typing could not reach the browser’s speech service. It works in Google Chrome or Edge, but not in Brave. Please open ClassMap in Chrome, or type here.', 'error'); else if (ev.error !== 'no-speech' && ev.error !== 'aborted') toast('Voice typing stopped (' + ev.error + ').', 'info'); stopRec(); };
+                r.onend = () => { if (rec === r) { try { r.start(); } catch { stopRec(); } } };   // keeps listening through pauses until you click the mic again
+                try { r.start(); } catch { stopRec(); }
             });
         });
         const mo = new MutationObserver(decorate); mo.observe(sideEl, { childList: true, subtree: true }); decorate();
-        stopListeners.push(() => { mo.disconnect(); try { mr?.stop(); } catch { /* */ } cleanup(); });
+        stopListeners.push(() => { mo.disconnect(); stopRec(); });
     }
     updateMine();
     const onSync = () => renderSync(); ob.subs.add(onSync); stopListeners.push(() => ob.subs.delete(onSync)); renderSync();

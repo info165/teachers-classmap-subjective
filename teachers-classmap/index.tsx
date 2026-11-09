@@ -30850,21 +30850,6 @@ initOsm({
     loading: (show, text) => toggleLoading(show, text),
     parseExcel: (file) => parseExcelToQuestions(file),
     pdfToImages: (file) => processPdfToImageFiles(file),
-    transcribe: async (audio) => {
-        const toWav = async (b: Blob): Promise<Uint8Array> => {   // browsers record webm/mp4; the AI is most reliable with plain 16 kHz mono WAV
-            const AC: any = (window as any).AudioContext || (window as any).webkitAudioContext; const ctx = new AC();
-            const dec: AudioBuffer = await ctx.decodeAudioData(await b.arrayBuffer()); try { ctx.close(); } catch { /* */ }
-            const rate = 16000, len = Math.max(1, Math.ceil(dec.duration * rate)); const off = new OfflineAudioContext(1, len, rate);
-            const src = off.createBufferSource(); src.buffer = dec; src.connect(off.destination); src.start(); const pcm = (await off.startRendering()).getChannelData(0);
-            const out = new DataView(new ArrayBuffer(44 + pcm.length * 2)); const w = (o: number, t: string) => { for (let k = 0; k < t.length; k++) out.setUint8(o + k, t.charCodeAt(k)); };
-            w(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true); out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, pcm.length * 2, true);
-            for (let k = 0; k < pcm.length; k++) out.setInt16(44 + k * 2, Math.max(-1, Math.min(1, pcm[k])) * 0x7fff, true);
-            return new Uint8Array(out.buffer);
-        };
-        const buf = await toWav(audio); let bin = ''; for (let k = 0; k < buf.length; k += 0x8000) bin += String.fromCharCode(...buf.subarray(k, k + 0x8000));
-        const r = await getAiInstance().models.generateContent({ model: 'gemini-2.5-flash', contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'audio/wav', data: btoa(bin) } }, { text: 'Write down exactly what the speaker says, in the language spoken (English, Hindi, Bengali or a mix; use the Latin alphabet for English and the native script otherwise). This is a teacher dictating a short note about a student\'s answer. Return only the words spoken, with normal punctuation. No quotes, no commentary. If there is no speech, return an empty string.' }] }], config: { temperature: 0 } });
-        return (r.text || '').trim();
-    },
     processImage: (file) => processImageFile(file),
     fmtMath: (text) => formatMathExpressions(text),
     typeset: (el) => typesetMathInContainer(el),
