@@ -1,4 +1,5 @@
 import { computeLearn, learnBlocks } from './learn';
+import { renderClassAnalysis } from './classAnalysis';
 /**
  * Teacher Marking ("OSM") — teachers enter marks per question on the screen.
  *
@@ -334,6 +335,29 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
         const pSnaps: any[] = await Promise.all(roster.students.map((s: any) => subRef(paper, s.uid).get().catch(() => null)));
         parents = new Map(); roster.students.forEach((s: any, i: number) => { if (pSnaps[i]?.exists) parents.set(s.uid, pSnaps[i].data()); });
     }
+    // Class-wide analysis: adds up the existing reports (no AI, no cost)
+    async function openAnalysis() {
+        el.innerHTML = shell('Class analysis · ' + paper.title, `Class ${esc(paper.className)}–${esc(paper.section)} · ${esc(paper.subject)}`, `<div class="osm-center"><div class="osm-spin"></div></div>`, 'Back to students');
+        wireClose(el, () => { openPaper(roster, paper, teachers); });
+        try {
+            const students = await Promise.all(roster.students.map(async (s: any) => {
+                const parent = parents.get(s.uid); let reports: any[] | null = null;
+                if (parent) {
+                    const r = await subRef(paper, s.uid).collection('detail').doc('report').get().catch(() => null);
+                    reports = r?.exists ? (r.data().questionWiseReport || []).map((x: any) => ({ ...x })) : null;
+                    if (reports) {
+                        const marks = docs.get(s.uid)?.marks || {};
+                        reports.forEach((x: any, i: number) => { if (marks[qk(i)]?.na) x._unattemptedAlt = true; });
+                        let losers: Set<string>; try { losers = B.orLosers(reports.map(x => ({ questionNumber: x.questionNumber, marksAwarded: x.marksAwarded || 0, maxMarksForQuestion: x.maxMarksForQuestion, checkingInstructions: x.checkingInstructions || '' })), paper.questions); } catch { losers = new Set(); }
+                        reports.forEach((x: any) => { x._runtimeOrLoser = losers.has(x.questionNumber) || !!x._unattemptedAlt; });
+                    }
+                }
+                return { uid: s.uid, name: String(s.name || ''), roll: String(s.rollNumber ?? ''), score: parent ? Number(parent.overallScore) || 0 : null, max: declaredTotal(paper) || 0, reports };
+            }));
+            const bodyEl = el.querySelector('.osm-body') as HTMLElement;
+            renderClassAnalysis(bodyEl, { title: paper.title, sub: '', students, onBack: () => openPaper(roster, paper, teachers), onOpen: (uid) => openDesk(roster, paper, teachers, uid, [uid], 'fb') });
+        } catch (e: any) { toast('Could not build the analysis: ' + e.message, 'error'); openPaper(roster, paper, teachers); }
+    }
     let autoAssigned = false;
     async function render() {
         const body = el.querySelector('.osm-body') as HTMLElement | null; if (!body) return;
@@ -381,6 +405,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
             <div class="osm-toolbar-btns">
               <span class="osm-sort"><label for="osm-sortsel">Sort by</label><select id="osm-sortsel">${([['roll', 'Roll'], ['name', 'Student name'], ['sheet', 'Answer sheet'], ['marks', 'Marks'], ['status', 'Status']] as [string, string][]).map(([k, l]) => `<option value="${k}" ${sortKey === k ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="osm-btn small" id="osm-sortdir" title="Reverse the order">${sortDir === 1 ? '↑ A–Z / low–high' : '↓ Z–A / high–low'}</button></span>
               ${multiTeacher ? `<button class="osm-btn ${myAssign.length ? '' : 'primary osm-attn'}" id="osm-assign" title="Several teachers mark this paper: choose which questions are yours">${ICON.user}<span>${myAssign.length ? `My questions (${myAssign.length})` : 'Choose my questions'}</span></button>` : ''}
+              ${analysedN ? `<button class="osm-btn primary" id="osm-classan" title="Class-wide strengths, weaknesses and topics to re-teach">${ICON.file}<span>Class analysis</span></button>` : ''}
               <button class="osm-btn" id="osm-howto" title="A quick walkthrough for teachers">?<span>How to mark</span></button>
               ${toPublish.length ? `<button class="osm-btn osm-pubsoft" id="osm-pub-all" title="Publishes every analysed report on this paper. Can be done later.">${ICON.send}<span>Publish all analysed (${toPublish.length})</span></button>` : ''}
             </div>
@@ -402,6 +427,7 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
         body.querySelector('#osm-sortdir')?.addEventListener('click', () => setSort(sortKey, sortDir === 1 ? -1 : 1));
         body.querySelectorAll<HTMLElement>('th.osm-sortable').forEach(th => th.addEventListener('click', () => setSort(th.dataset.sort as SortKey)));
         body.querySelector('#osm-howto')?.addEventListener('click', () => openTour());
+        body.querySelector('#osm-classan')?.addEventListener('click', () => openAnalysis());
         body.querySelector('#osm-assign')?.addEventListener('click', () => openAssignModal(paper, meta, me.uid, roster.students, async (list, stu) => {
             await metaRef(paper).set({ assign: { [me.uid]: list }, students: { [me.uid]: stu } }, { merge: true });
             await reload(); await render();
