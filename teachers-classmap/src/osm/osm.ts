@@ -1310,10 +1310,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         refreshScoreOnly();
     }
     // "Not attempted": greyed out, no marks, never counted as a weakness. Typing a mark afterwards switches it off again.
+    const clearedAt: Record<string, number> = {};   // when this teacher switched 'not attempted' off here: an older copy coming back from the cloud must not undo it
     function setNA(i: number, on: boolean, quiet = false) {
         const prevM = doc.marks?.[qk(i)];
         const entry: any = on ? { v: 0, na: true, by: me.uid, n: me.name, t: Date.now() } : null;
-        if (on) (doc.marks ||= {})[qk(i)] = entry; else if (doc.marks) delete doc.marks[qk(i)];
+        if (on) (doc.marks ||= {})[qk(i)] = entry; else { if (doc.marks) delete doc.marks[qk(i)]; clearedAt[qk(i)] = Date.now(); }
         const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
         obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevM?.na ? 'na' : prevM?.v, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, 0);
         if (fbReport) applyMarkToReport(i, 0);
@@ -1438,7 +1439,8 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         if (!snap.exists || snap.metadata.hasPendingWrites) return;
         const d = snap.data(); const active = document.activeElement as HTMLInputElement | null;
         let changed = false;
-        Object.entries(d.marks || {}).forEach(([k, v]: any) => { const cur = doc.marks?.[k]; if (!cur || cur.t < v.t) { if (!(active?.classList.contains('osm-in') && qk(Number(active.dataset.i)) === k)) { (doc.marks ||= {})[k] = v; changed = true; } } });
+        Object.entries(doc.marks || {}).forEach(([k, m]: any) => { if (m?.na && !(d.marks || {})[k] && !ob.ops.some(o => o.kind === 'mark' && o.suid === studentUid && o.pid === paper.id && o.data.qk === k)) { delete doc.marks![k]; changed = true; } });   // cleared on another screen
+        Object.entries(d.marks || {}).forEach(([k, v]: any) => { if (clearedAt[k] && v.t <= clearedAt[k]) return; const cur = doc.marks?.[k]; if (!cur || cur.t < v.t) { if (!(active?.classList.contains('osm-in') && qk(Number(active.dataset.i)) === k)) { (doc.marks ||= {})[k] = v; changed = true; } } });
         const nd = JSON.stringify(Object.keys(d.done || {}).sort()); if (nd !== JSON.stringify(Object.keys(doc.done || {}).sort())) { doc.done = d.done || {}; changed = true; }
         if (!changed) return;
         Object.entries(d.notes || {}).forEach(([k, v]: any) => { const mine = active?.classList.contains('osm-reason') && qk(Number(active.dataset.i)) === k; if (!mine && doc.notes?.[k]?.t !== v.t) { (doc.notes ||= {})[k] = v; changed = true; } });
