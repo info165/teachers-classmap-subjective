@@ -1234,10 +1234,11 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           }).join('')}
           </div></div>
           <div class="osm-foot">
+            <div class="osm-orwarn" id="osm-orwarn" style="display:none"></div>
             <div class="osm-doneline">${paper.questions.length ? teachers.map(t => `<span class="osm-chip ${doc.done?.[t.uid] ? 'on' : ''}">${esc(shortName(t.name, teachers))}${doc.done?.[t.uid] ? ' ✓' : ''}</span>`).join('') : ''}</div>
             <div class="osm-actions"><button class="osm-btn ${iAmDone ? 'done' : 'primary'}" id="osm-given" title="${iAmDone ? 'Click to reopen and edit' : 'Click when you have finished marking this sheet'}">${iAmDone ? '✓ Completed' : 'Completed'}</button><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div>
           </div>`;
-        statusEl = sideEl.querySelector('#osm-save');
+        statusEl = sideEl.querySelector('#osm-save'); updateOrWarn();
         B.typeset(sideEl);
         wireSide();
     }
@@ -1336,7 +1337,19 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         el.className = 'osm-mine ' + (done ? 'ok' : marked === mine.length ? 'ready' : '');
         el.innerHTML = `<span><b>Your questions:</b> ${marked} of ${mine.length} marked</span><span>${done ? '✓ Completed' : marked === mine.length ? 'All marked — click <b>Completed</b>' : 'not completed yet'}</span>`;
     }
+    // Both halves of an "Alternative Question (OR)" carry marks: probably a slip, tell the teacher.
+    function updateOrWarn() {
+        const box = sideEl.querySelector('#osm-orwarn') as HTMLElement | null; if (!box) return;
+        const has = (j: number) => { const m = doc.marks?.[qk(j)]; return !!m && !m.na; };
+        const pairs: [number, number][] = []; paper.questions.forEach((_: any, i: number) => partnersOf(i).forEach(j => { if (i < j && has(i) && has(j)) pairs.push([i, j]); }));
+        if (!pairs.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+        const lab = (i: number) => 'Q' + (paper.questions[i].questionNumber || i + 1);
+        box.innerHTML = pairs.map(([a, b]) => `<div class="osm-orw"><b>⚠ ${esc(lab(a))} and ${esc(lab(b))}</b> are alternative choices (OR) but <b>both have marks</b>. The student should answer only one: please set the other to <b>Not attempted</b>. <span class="osm-orgo"><button data-i="${a}">Go to ${esc(lab(a))}</button><button data-i="${b}">Go to ${esc(lab(b))}</button></span></div>`).join('');
+        box.style.display = 'block';
+        box.querySelectorAll<HTMLButtonElement>('.osm-orgo button').forEach(bt => bt.addEventListener('click', () => (sideEl.querySelector(`.osm-rb[data-i="${bt.dataset.i}"]`) as HTMLElement | null)?.click()));
+    }
     function refreshScoreOnly() {
+        updateOrWarn();
         updateMine();
         const sc = scoreFor(paper, doc.marks); const dt = declaredTotal(paper);
         const n = sideEl.querySelector('.osm-score-num'); if (n) n.innerHTML = `${fmt1(sc.total)}<small> / ${dt || '—'}</small>`;
@@ -1688,6 +1701,8 @@ button.osm-link{font-size:11.5px}
 #osm-root .osm-chiprow .osm-rbtn svg{width:11px!important;height:11px!important}#osm-root .osm-chiprow .osm-rbtn em{display:none}
 #osm-root .osm-tag.owner{background:#e9edf5;color:#3b4a66;font-weight:600;border:1px solid #d3d9e6}#osm-root .osm-tag.mine{font-weight:700}
 #osm-root .osm-qtop .osm-nab.on{background:#3b8bea!important;color:#fff!important;border-color:#3b8bea!important}
+#osm-root .osm-orwarn{display:none}#osm-root .osm-orw{background:#fff1e6;border:1.5px solid #f08a24;color:#7a3a00;border-radius:10px;padding:6px 10px;font-size:.76rem;line-height:1.4;margin-bottom:5px}
+#osm-root .osm-orgo{display:inline-flex;gap:5px;margin-left:4px}#osm-root .osm-orgo button{border:1px solid #f08a24;background:#fff;color:#7a3a00;border-radius:99px;padding:1px 8px;font-size:.7rem;font-weight:600;cursor:pointer}#osm-root .osm-orgo button:hover{background:#ffe3cc}
 `;
     document.head.appendChild(s);
 }
