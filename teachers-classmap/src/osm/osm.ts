@@ -1214,7 +1214,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
               const max = qMax(q);
               return `<div class="osm-q ${mine ? 'mine' : 'other'} ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${qColor(m, max)}">
                 <div class="osm-q-row osm-qtop">
-                  <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${showMine && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}</div>
+                  <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${multiT ? teachers.filter(t => (meta.assign?.[t.uid] || []).includes(i)).map(t => t.uid === me.uid ? `<span class="osm-tag mine">${esc(shortName(t.name, teachers))} · yours</span>` : `<span class="osm-tag owner">${esc(shortName(t.name, teachers))}</span>`).join('') : ''}</div>
                   <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (no marks, not counted as a weakness)">${m?.na ? '✓ ' : ''}Not attempted</button>
                 </div>
                 <div class="osm-q-row osm-qstep">
@@ -1679,6 +1679,7 @@ button.osm-link{font-size:11.5px}
 #osm-root .osm-chiprow .osm-by{margin:0 4px 0 2px!important;font-size:.68rem!important;white-space:nowrap}
 #osm-root .osm-chiprow .osm-rbtn{margin:0 0 0 auto!important;width:auto!important;min-height:0!important;height:22px!important;padding:0 9px!important;font-size:.68rem!important;font-weight:600;border-width:1px!important;border-radius:99px!important;display:inline-flex!important;align-items:center;gap:4px}
 #osm-root .osm-chiprow .osm-rbtn svg{width:11px!important;height:11px!important}#osm-root .osm-chiprow .osm-rbtn em{display:none}
+#osm-root .osm-tag.owner{background:#e9edf5;color:#3b4a66;font-weight:600;border:1px solid #d3d9e6}#osm-root .osm-tag.mine{font-weight:700}
 `;
     document.head.appendChild(s);
 }
