@@ -1213,19 +1213,20 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
           ${paper.questions.map((q, i) => {
               const m = doc.marks?.[qk(i)]; const mine = editable(i); const loser = sc.losers.has(q.questionNumber || String(i + 1));
               const max = qMax(q);
-              return `<div class="osm-q ${mine ? '' : 'other'} ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${qColor(m, max)}">
-                <div class="osm-q-row">
+              return `<div class="osm-q ${mine ? 'mine' : 'other'} ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${qColor(m, max)}">
+                <div class="osm-q-row osm-qtop">
                   <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${showMine && myIdx.has(i) ? '<span class="osm-tag mine">yours</span>' : ''}</div>
+                  <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (no marks, not counted as a weakness)">${m?.na ? '✓ ' : ''}Not attempted</button>
+                </div>
+                <div class="osm-q-row osm-qstep">
                   <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
                   <input class="osm-in" type="text" inputmode="decimal" autocomplete="off" value="${m && !m.na ? esc(Number(m.v)) : ''}" placeholder="–" ${mine ? '' : 'disabled'} data-i="${i}">
                   <button class="osm-mini step" data-act="inc" ${mine ? '' : 'disabled'} title="+ 0.5">+</button>
-                  <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full</button>
-                  <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (greyed out, no marks, not counted as a weakness)">N/A</button>
+                  <button class="osm-mini full" data-act="full" ${mine ? '' : 'disabled'} title="Give full marks">Full marks</button>
                 </div>
-                ${chipValues(max).length ? `<div class="osm-chips">${chipValues(max).map(v => `<button class="osm-cv ${m && !m.na && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${chipColor(v, max)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}</div>` : ''}
-                <div class="osm-qfoot">
-                ${m && m.by !== me.uid ? `<span class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</span>` : ''}
-                <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Write or speak why marks were cut on this question" ${mine ? '' : 'disabled'}>${ICON.pen}<span>Why marks cut?</span></button>
+                <div class="osm-chips osm-chiprow">${chipValues(max).map(v => `<button class="osm-cv ${m && !m.na && m.v === v ? 'sel' : ''}" data-v="${v}" style="--c:${chipColor(v, max)}" ${mine ? '' : 'disabled'}>${fmt1(v)}</button>`).join('')}
+                  ${m && m.by !== me.uid ? `<span class="osm-by">marked by ${esc(m.n || nameOf(m.by))}</span>` : ''}
+                  <button class="osm-rbtn ${doc.notes?.[qk(i)]?.t ? 'has' : ''}" data-i="${i}" title="Write or speak why marks were cut on this question" ${mine ? '' : 'disabled'}>${ICON.pen}<span>Why marks cut?</span></button>
                 </div>
                 <div class="osm-reasonbox" style="display:${doc.notes?.[qk(i)]?.t ? 'block' : 'none'}"><textarea class="osm-reason" data-i="${i}" rows="3" placeholder="Why were marks cut on this question? Write or speak…" ${mine ? '' : 'disabled'}>${esc(doc.notes?.[qk(i)]?.t || '')}</textarea></div>
                 <details class="osm-det"><summary>Question &amp; model answer</summary><div class="osm-qtext">${B.fmtMath(esc(q.text || ''))}</div>${q.answer ? `<div class="osm-ans"><b>Answer:</b> ${B.fmtMath(esc(q.answer))}</div>` : ''}${q.checkingInstructions ? `<div class="osm-ci">${esc(q.checkingInstructions)}</div>` : ''}</details>
@@ -1670,6 +1671,27 @@ button.osm-link{font-size:11.5px}
 .osm-foot{padding:10px 12px;background:#fff;border-top:1px solid var(--osm-line)}
 /* marking panel */
 .osm-q{border-radius:11px}.osm-score-num{font-size:1.3rem}
+
+/* question cards: yours are bright and clearly editable, other teachers' are faded; compact 3-line layout */
+#osm-root .osm-q{background:#fff;border:1px solid #e1e7f2;border-left:4px solid var(--c,#b8c0d0);border-radius:12px;box-shadow:0 1px 2px rgba(20,30,60,.05);padding:5px 9px 6px!important}
+#osm-root .osm-q.has{background:color-mix(in srgb,var(--c) 7%,#fff)}
+#osm-root .osm-q:not(.has):not(.other):not(.na){border-left-color:#2575fc;box-shadow:0 1px 4px rgba(37,117,252,.16)}
+#osm-root .osm-q:not(.has):not(.other):not(.na) .osm-qn{color:#1c3f9e}
+#osm-root .osm-q.other{opacity:.5;background:#f2f4f8;border-left-color:#c8cedb;box-shadow:none}
+#osm-root .osm-qtop{display:flex;align-items:center;gap:6px;min-height:22px}
+#osm-root .osm-qtop .osm-qn{font-size:1rem;letter-spacing:-.01em}
+#osm-root .osm-qtop .osm-nab{height:22px!important;min-height:0!important;padding:0 10px!important;border-radius:99px!important;font-size:.68rem!important;font-weight:600;background:#fff!important;color:#6b7280!important;border:1px solid #d3d9e6!important;box-shadow:none!important;white-space:nowrap}
+#osm-root .osm-qtop .osm-nab:hover:not(:disabled){background:#f1f3f8!important;color:#374151!important}
+#osm-root .osm-qtop .osm-nab.on{background:#6b7280!important;color:#fff!important;border-color:#6b7280!important}
+#osm-root .osm-qstep{display:flex;align-items:center;gap:6px;margin-top:4px;justify-content:flex-start}
+#osm-root .osm-qstep .osm-mini.step{width:30px;height:30px;padding:0;border-radius:9px;font-size:1.05rem;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+#osm-root .osm-qstep .osm-in{width:62px;height:30px;text-align:center;font-size:1rem;font-weight:700;border-radius:9px}
+#osm-root .osm-qstep .osm-mini.full{height:30px;padding:0 12px;border-radius:99px;font-size:.76rem;font-weight:700;background:#e7f6ee;color:#1c7c46;border:1px solid #bfe5d0}
+#osm-root .osm-qstep .osm-mini.full:hover:not(:disabled){background:#d4f0e1}
+#osm-root .osm-chiprow{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:5px!important}
+#osm-root .osm-chiprow .osm-by{margin:0 4px 0 2px!important;font-size:.68rem!important;white-space:nowrap}
+#osm-root .osm-chiprow .osm-rbtn{margin:0 0 0 auto!important;width:auto!important;min-height:0!important;height:22px!important;padding:0 9px!important;font-size:.68rem!important;font-weight:600;border-width:1px!important;border-radius:99px!important;display:inline-flex!important;align-items:center;gap:4px}
+#osm-root .osm-chiprow .osm-rbtn svg{width:11px!important;height:11px!important}#osm-root .osm-chiprow .osm-rbtn em{display:none}
 `;
     document.head.appendChild(s);
 }
