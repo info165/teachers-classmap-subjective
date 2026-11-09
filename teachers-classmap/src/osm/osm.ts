@@ -1439,7 +1439,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         if (!snap.exists || snap.metadata.hasPendingWrites) return;
         const d = snap.data(); const active = document.activeElement as HTMLInputElement | null;
         let changed = false;
-        Object.entries(doc.marks || {}).forEach(([k, m]: any) => { if (m?.na && !(d.marks || {})[k] && !ob.ops.some(o => o.kind === 'mark' && o.suid === studentUid && o.pid === paper.id && o.data.qk === k)) { delete doc.marks![k]; changed = true; } });   // cleared on another screen
+        Object.entries(doc.marks || {}).forEach(([k, m]: any) => { if (m?.na && !(d.marks || {})[k] && ![...ob.ops.values()].some(o => o.kind === 'mark' && o.suid === studentUid && o.pid === paper.id && o.data.qk === k)) { delete doc.marks![k]; changed = true; } });   // cleared on another screen
         Object.entries(d.marks || {}).forEach(([k, v]: any) => { if (clearedAt[k] && v.t <= clearedAt[k]) return; const cur = doc.marks?.[k]; if (!cur || cur.t < v.t) { if (!(active?.classList.contains('osm-in') && qk(Number(active.dataset.i)) === k)) { (doc.marks ||= {})[k] = v; changed = true; } } });
         const nd = JSON.stringify(Object.keys(d.done || {}).sort()); if (nd !== JSON.stringify(Object.keys(doc.done || {}).sort())) { doc.done = d.done || {}; changed = true; }
         if (!changed) return;
