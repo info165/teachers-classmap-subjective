@@ -51,9 +51,9 @@ function busy(show: boolean, text = 'Working…') {
 // Sheet uploads run in the background, one job per student, so a teacher can start the next student straight away.
 type UpJob = { stu: any; files: File[]; mode: 'add' | 'replace'; state: 'run' | 'ok' | 'err'; done: number; total: number; msg: string };
 const upJobs = new Map<string, UpJob>();
-// How the student list is ordered. Remembered on this device; default is by roll number so every teacher sees the same order.
+// How the student list is ordered. Remembered on this device; default is alphabetical by student name so every teacher sees the same order.
 type SortKey = 'roll' | 'name' | 'sheet' | 'marks' | 'status';
-let sortKey: SortKey = 'roll', sortDir: 1 | -1 = 1;
+let sortKey: SortKey = 'name', sortDir: 1 | -1 = 1;
 try { const v = JSON.parse(localStorage.getItem('osm-sort-v1') || 'null'); if (v && ['roll', 'name', 'sheet', 'marks', 'status'].includes(v.k)) { sortKey = v.k; sortDir = v.d === -1 ? -1 : 1; } } catch { /* ignore */ }
 const STATUS_RANK: Record<string, number> = { nosheet: 0, new: 1, prog: 2, ready: 3, analysed: 4, published: 5 };
 let upPaint: ((uid: string) => void) | null = null;
@@ -1129,7 +1129,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
               ${flags.length ? `<div class="osm-flags"><b>For you only (the student does not see this)</b><ul>${flags.map(f => `<li>Q${esc(f.q)}: ${esc(f.text)}</li>`).join('')}</ul></div>` : ''}
             </div>
           </div>
-          <div class="osm-foot"><div class="osm-actions"><span style="flex:1"></span><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'}><span>Next student</span>${ICON.next}</button></div></div>`;
+          <div class="osm-foot"><div class="osm-actions"><span style="flex:1"></span><button class="osm-btn small" id="osm-next" ${pos >= 0 && pos < order.length - 1 ? '' : 'disabled'} title="${pos >= 0 && pos < order.length - 1 ? 'Go to the next student on the list (A–Z) who has an answer sheet. You do not need to finish this one.' : 'No further student with an uploaded answer sheet. Upload more sheets on the paper page.'}"><span>Next student</span>${ICON.next}</button></div></div>`;
         // filter (lost marks / all) and the question map
         const fbs = sideEl.querySelector('#osm-fbs') as HTMLElement;
         sideEl.querySelectorAll<HTMLButtonElement>('.osm-seg2 button').forEach(b2 => b2.addEventListener('click', () => { fbs.dataset.f = b2.dataset.fl!; sideEl.querySelectorAll('.osm-seg2 button').forEach(x => x.classList.toggle('on', x === b2)); fbs.scrollTop = 0; }));
