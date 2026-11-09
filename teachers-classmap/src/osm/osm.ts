@@ -31,6 +31,7 @@ export interface OsmBridge {
     typeset: (el: HTMLElement) => Promise<void> | void;
     orLosers: (reports: any[], questions: any[]) => Set<string>;
     backToClass: () => void;
+    transcribe: (audio: Blob) => Promise<string>;
     analysisPdf: (report: any, ctx: any, onProgress?: (t: string) => void) => Promise<void>;
 }
 
@@ -1367,32 +1368,43 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
     renderSide();
     // 🎤 speak instead of typing: the browser's own speech recognition (asks for the microphone once). Works in every text box where feedback is written.
     {
-        const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition; let rec: any = null; let recBtn: HTMLElement | null = null;
-        const getLang = () => { try { return localStorage.getItem('osm-mic-lang') || 'en-IN'; } catch { return 'en-IN'; } };
-        const stopRec = () => { try { rec?.stop(); } catch { /* */ } rec = null; recBtn?.classList.remove('on'); recBtn = null; };
-        const MIC = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>';
+        // Records the voice and has the AI write it down (any language: English, Hindi, Bengali…). Does not depend on the browser's own speech service.
+        let mr: MediaRecorder | null = null; let recBtn: HTMLElement | null = null; let stream: MediaStream | null = null; let tick: any = null;
+        const MIC = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>';
+        const idleLabel = `${MIC}<span>Speak</span>`;
+        const cleanup = () => { clearInterval(tick); stream?.getTracks().forEach(t => t.stop()); stream = null; mr = null; };
         const decorate = () => sideEl.querySelectorAll<HTMLTextAreaElement>('.osm-reason,.osm-fbta,.osm-ovta').forEach(ta => {
             if (ta.parentElement?.classList.contains('osm-micwrap') || ta.disabled) return;
             const w = document.createElement('div'); w.className = 'osm-micwrap'; ta.parentElement!.insertBefore(w, ta); w.appendChild(ta);
-            w.insertAdjacentHTML('beforeend', `<button type="button" class="osm-miclang" title="Speaking language (click to switch English / Hindi)">${getLang() === 'hi-IN' ? 'हिं' : 'EN'}</button><button type="button" class="osm-mic" title="Speak instead of typing">${MIC}</button>`);
-            const mic = w.querySelector('.osm-mic') as HTMLElement, lg = w.querySelector('.osm-miclang') as HTMLElement;
-            [mic, lg].forEach(b => b.addEventListener('mousedown', e => e.preventDefault()));
-            lg.addEventListener('click', () => { const n = getLang() === 'hi-IN' ? 'en-IN' : 'hi-IN'; try { localStorage.setItem('osm-mic-lang', n); } catch { /* */ } sideEl.querySelectorAll('.osm-miclang').forEach(x => x.textContent = n === 'hi-IN' ? 'हिं' : 'EN'); if (rec) { const keep = recBtn; stopRec(); setTimeout(() => keep?.click(), 250); } });
-            mic.addEventListener('click', () => {
-                if (rec && recBtn === mic) { stopRec(); return; }
-                stopRec();
-                if (!SR) { toast('Voice typing needs Chrome or Edge. Please type here, or open ClassMap in Chrome.', 'info'); return; }
-                const r = new SR(); r.lang = getLang(); r.continuous = true; r.interimResults = true; rec = r; recBtn = mic; mic.classList.add('on');
-                const base = ta.value; let finalTxt = '';
-                r.onresult = (ev: any) => { let interim = ''; for (let k = ev.resultIndex; k < ev.results.length; k++) { const t = ev.results[k][0].transcript; if (ev.results[k].isFinal) finalTxt += (finalTxt && !/\s$/.test(finalTxt) ? ' ' : '') + t.trim(); else interim += t; }
-                    ta.value = (base ? base.replace(/\s+$/, '') + ' ' : '') + finalTxt + (interim ? (finalTxt ? ' ' : '') + interim : ''); ta.dispatchEvent(new Event('input', { bubbles: true })); };
-                r.onerror = (ev: any) => { if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') toast('Microphone is blocked. Click the lock icon in the address bar, allow the microphone for this site, then try again.', 'error'); else if (ev.error !== 'no-speech' && ev.error !== 'aborted') toast('Voice typing stopped (' + ev.error + ').', 'info'); stopRec(); };
-                r.onend = () => { if (rec === r) { try { r.start(); } catch { stopRec(); } } };   // keeps listening through pauses until you click the mic again
-                try { r.start(); } catch { stopRec(); }
+            w.insertAdjacentHTML('beforeend', `<button type="button" class="osm-mic" title="Speak instead of typing: click, talk, click again to stop">${idleLabel}</button>`);
+            const mic = w.querySelector('.osm-mic') as HTMLButtonElement;
+            mic.addEventListener('mousedown', e => e.preventDefault());
+            mic.addEventListener('click', async () => {
+                if (mr && recBtn === mic) { try { mr.stop(); } catch { /* */ } return; }   // second click: stop and write it down
+                if (mr) return;
+                if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { toast('Voice typing is not available in this browser. Please type here.', 'info'); return; }
+                try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+                catch (e: any) { toast(e?.name === 'NotAllowedError' || e?.name === 'SecurityError' ? 'Microphone is blocked. Click the lock icon in the address bar, allow the microphone for this site, then try again. (If ClassMap is opened inside another website, open teachers-classmap.web.app directly.)' : 'No microphone found.', 'error'); cleanup(); return; }
+                const chunks: Blob[] = []; const rec = new MediaRecorder(stream); mr = rec; recBtn = mic; mic.classList.add('on');
+                const t0 = Date.now(); const paint = () => { const sec = Math.floor((Date.now() - t0) / 1000); mic.innerHTML = `<span class="osm-recdot"></span><span>Stop · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}</span>`; }; paint(); tick = setInterval(paint, 500);
+                rec.ondataavailable = ev => { if (ev.data.size) chunks.push(ev.data); };
+                rec.onstop = async () => {
+                    const type = rec.mimeType || 'audio/webm'; cleanup(); mic.classList.remove('on'); recBtn = null;
+                    const blob = new Blob(chunks, { type });
+                    if (blob.size < 1500) { mic.innerHTML = idleLabel; toast('Did not hear anything. Please try again.', 'info'); return; }
+                    mic.disabled = true; mic.innerHTML = '<span class="osm-spin2"></span><span>Writing…</span>';
+                    try {
+                        const txt = (await B.transcribe(blob)).trim();
+                        if (txt) { ta.value = (ta.value ? ta.value.replace(/\s+$/, '') + ' ' : '') + txt; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.focus(); }
+                        else toast('Could not make out any words. Please try again.', 'info');
+                    } catch (e: any) { toast('Could not write down the voice (' + (e?.message || 'network') + '). Please try again or type.', 'error'); }
+                    finally { mic.disabled = false; mic.innerHTML = idleLabel; }
+                };
+                rec.start();
             });
         });
         const mo = new MutationObserver(decorate); mo.observe(sideEl, { childList: true, subtree: true }); decorate();
-        stopListeners.push(() => { mo.disconnect(); stopRec(); });
+        stopListeners.push(() => { mo.disconnect(); try { mr?.stop(); } catch { /* */ } cleanup(); });
     }
     updateMine();
     const onSync = () => renderSync(); ob.subs.add(onSync); stopListeners.push(() => ob.subs.delete(onSync)); renderSync();
@@ -1521,11 +1533,10 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 #osm-root .osm-rbtn svg{width:14px;height:14px;flex:none}#osm-root .osm-rbtn em{font-style:normal;font-weight:400;opacity:.8;font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #osm-root .osm-rbtn:hover:not(:disabled){background:#ffefc2;border-color:#d99100;color:#6f4700}#osm-root .osm-rbtn.has{background:#f2a900;color:#fff;border-color:#f2a900}#osm-root .osm-rbtn.has em{opacity:.95}
 .osm-priv{font-size:.7rem;color:var(--osm-muted);margin-top:3px}.osm-reasonbox{margin-top:2px}
-.osm-micwrap{position:relative}.osm-micwrap textarea{padding-right:64px!important;box-sizing:border-box}
-.osm-mic,.osm-miclang{position:absolute;bottom:6px;border:0;cursor:pointer;font-family:inherit}
-.osm-mic{right:6px;width:28px;height:28px;border-radius:50%;background:#e8eefc;color:#2a4fb0;display:flex;align-items:center;justify-content:center;padding:0}.osm-mic:hover{background:#d4e0fb}
-.osm-mic.on{background:#e53935;color:#fff;animation:osmpulse 1.1s infinite}@keyframes osmpulse{0%{box-shadow:0 0 0 0 rgba(229,57,53,.5)}100%{box-shadow:0 0 0 9px rgba(229,57,53,0)}}
-.osm-miclang{right:38px;height:22px;margin-bottom:3px;padding:0 6px;border-radius:7px;background:transparent;color:var(--osm-muted);font-size:.66rem;font-weight:700;border:1px solid var(--osm-line)}
+.osm-micwrap{position:relative}.osm-micwrap textarea{padding-bottom:40px!important;box-sizing:border-box}
+.osm-mic{position:absolute;right:8px;bottom:8px;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 14px 0 11px;border:0;border-radius:99px;background:#2575fc;color:#fff;font:inherit;font-size:.82rem;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(37,117,252,.35)}.osm-mic:hover{background:#1c63dd}.osm-mic:disabled{opacity:.75;cursor:wait}
+.osm-mic.on{background:#e53935;box-shadow:0 0 0 0 rgba(229,57,53,.5);animation:osmpulse 1.1s infinite}@keyframes osmpulse{0%{box-shadow:0 0 0 0 rgba(229,57,53,.5)}100%{box-shadow:0 0 0 9px rgba(229,57,53,0)}}
+.osm-recdot{width:9px;height:9px;border-radius:50%;background:#fff}.osm-spin2{width:13px;height:13px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:osmrot .8s linear infinite}@keyframes osmrot{to{transform:rotate(360deg)}}
 .osm-q.na{opacity:.55;background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(150,160,180,.12) 8px 16px)}.osm-q.na .osm-in{background:transparent}
 .osm-rb.na{background:repeating-linear-gradient(135deg,transparent 0 4px,rgba(150,160,180,.25) 4px 8px);border-style:dashed}
 .osm-nab{font-size:.68rem!important;padding:0 7px!important;min-width:0!important}.osm-nab.on{background:#6b7280!important;color:#fff!important;border-color:#6b7280!important}
