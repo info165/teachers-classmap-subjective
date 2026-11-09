@@ -413,12 +413,12 @@ async function openPaper(roster: Roster, paper: Paper, teachers: { uid: string; 
           ${multiTeacher && !myAssign.length ? `<div class="osm-pickbanner">Several teachers mark this paper. <b>First choose your questions</b> (“Choose my questions”), so you are only asked about your own.</div>` : ''}
           <div class="osm-table-wrap"><table class="osm-table"><thead><tr>${([['roll', 'Roll'], ['name', 'Student'], ['sheet', 'Answer sheet'], ['marks', 'Marks']] as [string, string][]).map(([k, l]) => `<th class="osm-sortable" data-sort="${k}">${l}${sortKey === k ? (sortDir === 1 ? ' ▲' : ' ▼') : ''}</th>`).join('')}<th>Teachers done</th><th class="osm-sortable" data-sort="status">Status${sortKey === 'status' ? (sortDir === 1 ? ' ▲' : ' ▼') : ''}</th><th>Actions</th></tr></thead><tbody>
           ${rows.map(({ s, d, st, sc, parent }) => `<tr class="${myStu.length && !myStu.includes(s.uid) ? 'osm-dim' : ''}">
-            <td>${esc(s.rollNumber || '')}</td><td class="osm-nm">${esc(s.name)}</td>
+            <td class="osm-roll">${esc(s.rollNumber || '')}</td><td class="osm-nm"><span class="osm-av" style="--h:${(String(s.name || '?').split('').reduce((h: number, c: string) => h + c.charCodeAt(0), 0) * 37) % 360}">${esc(String(s.name || '?').trim().split(/\s+/).slice(0, 2).map((w: string) => w[0]).join('').toUpperCase())}</span><span class="osm-nmt">${esc(s.name)}</span></td>
             <td data-upcell="${esc(s.uid)}">${upCell(s, d)}</td>
-            <td>${d?.pages?.length ? `<b>${fmt1(parent?.overallScore ?? sc.total)}</b> / ${declaredTotal(paper) || '—'}` : '—'}</td>
-            <td>${teachers.map(t => `<span class="osm-chip ${st.doneBy.includes(t.uid) ? 'on' : ''}" title="${esc(t.name)}">${esc(shortName(t.name, teachers))}${st.doneBy.includes(t.uid) ? ' ✓' : ''}</span>`).join('')}</td>
+            <td class="osm-mk">${d?.pages?.length ? `<b>${fmt1(parent?.overallScore ?? sc.total)}</b><small> / ${declaredTotal(paper) || '—'}</small>` : '<span class="osm-muted">—</span>'}</td>
+            <td class="osm-tdone"><div class="osm-tdwrap">${teachers.map(t => `<span class="osm-chip ${st.doneBy.includes(t.uid) ? 'on' : ''}" title="${esc(t.name)}">${esc(shortName(t.name, teachers))}${st.doneBy.includes(t.uid) ? ' ✓' : ''}</span>`).join('')}</div></td>
             <td><span class="osm-badge ${st.code}"><i></i>${esc(st.label)}</span></td>
-            <td class="osm-act">${d?.pages?.length ? `<button class="osm-btn primary osm-markbtn osm-open" data-uid="${esc(s.uid)}">${ICON.pen}<span>Mark</span></button>` : ''}${parent ? `<button class="osm-btn soft osm-fbbtn" data-uid="${esc(s.uid)}">${ICON.msg}<span>Feedback</span></button>${parent.published ? `<button class="osm-btn quiet osm-unpub" data-uid="${esc(s.uid)}" title="Remove from the student's app">${ICON.eyeoff}<span>Unpublish</span></button>` : `<button class="osm-btn outline osm-pub" data-uid="${esc(s.uid)}">${ICON.send}<span>Publish</span></button>`}` : ''}</td>
+            <td class="osm-acttd"><div class="osm-act">${d?.pages?.length ? `<button class="osm-btn primary osm-markbtn osm-open" data-uid="${esc(s.uid)}">${ICON.pen}<span>Mark</span></button>` : ''}${parent ? `<button class="osm-btn soft osm-fbbtn" data-uid="${esc(s.uid)}">${ICON.msg}<span>Feedback</span></button>${parent.published ? `<button class="osm-btn quiet osm-unpub" data-uid="${esc(s.uid)}" title="Remove from the student's app">${ICON.eyeoff}<span>Unpublish</span></button>` : `<button class="osm-btn outline osm-pub" data-uid="${esc(s.uid)}">${ICON.send}<span>Publish</span></button>`}` : ''}</div></td>
           </tr>`).join('')}
           </tbody></table></div>`;
         (el as HTMLElement).scrollTop = scroll;
@@ -1725,6 +1725,29 @@ button.osm-link{font-size:11.5px}
 #osm-root .osm-chiprow .osm-by{margin:0 4px 0 2px!important;font-size:.68rem!important;white-space:nowrap}
 #osm-root .osm-chiprow .osm-rbtn{margin:0 0 0 auto!important;width:auto!important;min-height:0!important;height:22px!important;padding:0 9px!important;font-size:.68rem!important;font-weight:600;border-width:1px!important;border-radius:99px!important;display:inline-flex!important;align-items:center;gap:4px}
 #osm-root .osm-chiprow .osm-rbtn svg{width:11px!important;height:11px!important}#osm-root .osm-chiprow .osm-rbtn em{display:none}
+/* student table redesign: one-line teacher chips, avatar + name, tidy actions column */
+#osm-root .osm-body{max-width:1360px}
+#osm-root .osm-table-wrap{border-radius:18px;border:1px solid #e6eaf5;box-shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px rgba(37,117,252,.07)}
+#osm-root .osm-table{border-collapse:separate;border-spacing:0;font-size:13.5px}
+#osm-root .osm-table thead th{background:linear-gradient(180deg,#f4f7ff,#eef3ff);font-size:11px;padding:12px 14px;border-bottom:1px solid #dfe6f6;white-space:nowrap;position:sticky;top:0;z-index:2}
+#osm-root .osm-table td{padding:12px 14px;border-bottom:1px solid #eef1f8;vertical-align:middle}
+#osm-root .osm-table tbody tr{transition:background .12s}#osm-root .osm-table tbody tr:hover{background:#f6f9ff}
+#osm-root .osm-table tbody tr:nth-child(even){background:#fbfcff}#osm-root .osm-table tbody tr:nth-child(even):hover{background:#f6f9ff}
+#osm-root td.osm-roll{color:#7a869f;font-variant-numeric:tabular-nums;font-size:12.5px;white-space:nowrap}
+#osm-root td.osm-nm{white-space:nowrap}
+#osm-root .osm-av{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;margin-right:10px;vertical-align:middle;font-size:11.5px;font-weight:700;color:hsl(var(--h),55%,32%);background:hsl(var(--h),70%,92%);border:1px solid hsl(var(--h),60%,84%)}
+#osm-root .osm-nmt{vertical-align:middle;font-weight:600;color:#1f2a44}
+#osm-root td.osm-mk{white-space:nowrap}#osm-root td.osm-mk b{font-size:15px;color:#1f2a44}#osm-root td.osm-mk small{color:#8b96ad;font-size:12px}
+#osm-root td.osm-tdone{white-space:nowrap}
+#osm-root .osm-tdwrap{display:flex;flex-wrap:nowrap;gap:5px;align-items:center}
+#osm-root .osm-tdwrap .osm-chip{margin:0;white-space:nowrap;flex:none;padding:3px 10px;font-size:11.5px;background:#f3f5fa}
+#osm-root .osm-tdwrap .osm-chip.on{background:#d9f3e6;color:var(--osm-ok);border-color:#b8e6cd;font-weight:600}
+#osm-root td.osm-acttd{white-space:nowrap}
+#osm-root td.osm-acttd .osm-act{display:flex;flex-wrap:nowrap;gap:8px;align-items:center;justify-content:flex-start}
+#osm-root td.osm-acttd .osm-act .osm-btn{margin:0}
+#osm-root .osm-table td[data-upcell]{white-space:nowrap}
+#osm-root .osm-toolbar{padding:2px 0 6px}
+@media(max-width:900px){#osm-root .osm-body{padding:14px 10px 40px}#osm-root .osm-av{display:none}}
 #osm-root .osm-tag.owner{background:#e9edf5;color:#3b4a66;font-weight:600;border:1px solid #d3d9e6}#osm-root .osm-tag.mine{font-weight:700}
 #osm-root .osm-qtop .osm-nab.on{background:#3b8bea!important;color:#fff!important;border-color:#3b8bea!important}
 #osm-root .osm-orwarn{display:none}#osm-root .osm-orw{background:#fff1e6;border:1.5px solid #f08a24;color:#7a3a00;border-radius:10px;padding:6px 10px;font-size:.76rem;line-height:1.4;margin-bottom:5px}
