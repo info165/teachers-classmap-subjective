@@ -1215,7 +1215,7 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
               return `<div class="osm-q ${mine ? 'mine' : 'other'} ${m ? 'has' : ''} ${m?.na ? 'na' : ''} ${loser ? 'loser' : ''}" data-i="${i}" style="--c:${qColor(m, max)}">
                 <div class="osm-q-row osm-qtop">
                   <div class="osm-qh"><span class="osm-qn">Q${esc(q.questionNumber || i + 1)}</span><span class="osm-max">/ ${fmt1(max)}</span>${/alternative question \(or\)/i.test(q.checkingInstructions || '') ? '<span class="osm-tag">OR</span>' : ''}${multiT ? teachers.filter(t => (meta.assign?.[t.uid] || []).includes(i)).map(t => t.uid === me.uid ? `<span class="osm-tag mine">${esc(shortName(t.name, teachers))} · yours</span>` : `<span class="osm-tag owner">${esc(shortName(t.name, teachers))}</span>`).join('') : ''}</div>
-                  <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="The student did not attempt this question (no marks, not counted as a weakness)">${m?.na ? '✓ ' : ''}Not attempted</button>
+                  <button class="osm-mini osm-nab ${m?.na ? 'on' : ''}" data-i="${i}" ${mine ? '' : 'disabled'} title="Click if the student did not attempt this question (no marks, not counted as a weakness). Click again to undo.">Not attempted</button>
                 </div>
                 <div class="osm-q-row osm-qstep">
                   <button class="osm-mini step" data-act="dec" ${mine ? '' : 'disabled'} title="− 0.5">−</button>
@@ -1304,24 +1304,29 @@ async function openDesk(roster: Roster, paper: Paper, teachers: { uid: string; n
         // saved on this device at once; sent to the cloud right after (and re-sent automatically if it cannot be)
         obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevV, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, immediate ? 0 : 600);
         if (fbReport) applyMarkToReport(i, v);   // already analysed: keep the report in step
+        // marks given to one half of an OR pair: the other half (if still unmarked and yours) becomes 'not attempted'
+        if (v > 0) { let auto = false; partnersOf(i).forEach(j => { if (doc.marks?.[qk(j)] === undefined && editable(j)) { setNA(j, true, true); auto = true; } }); if (auto) { renderSideKeepFocus(reopened); refreshScoreOnly(); return; } }
         if (reopened) renderSideKeepFocus();
         refreshScoreOnly();
     }
     // "Not attempted": greyed out, no marks, never counted as a weakness. Typing a mark afterwards switches it off again.
-    function setNA(i: number, on: boolean) {
+    function setNA(i: number, on: boolean, quiet = false) {
         const prevM = doc.marks?.[qk(i)];
         const entry: any = on ? { v: 0, na: true, by: me.uid, n: me.name, t: Date.now() } : null;
         if (on) (doc.marks ||= {})[qk(i)] = entry; else if (doc.marks) delete doc.marks[qk(i)];
         const reopened = !!doc.done?.[me.uid]; if (reopened) delete doc.done![me.uid];
         obEnqueue({ key: `mark:${paper.id}:${studentUid}:${qk(i)}`, kind: 'mark', by: me.uid, owner: paper.owner, pid: paper.id, suid: studentUid, at: Date.now(), data: { qk: qk(i), qLabel: 'Q' + (paper.questions[i].questionNumber || i + 1), entry, prev: prevM?.na ? 'na' : prevM?.v, reopen: reopened, studentName: doc.studentName || stu?.name || '', rollNumber: doc.rollNumber || stu?.rollNumber || '' } }, 0);
         if (fbReport) applyMarkToReport(i, 0);
-        renderSide(); if (reopened) toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
+        if (!quiet) renderSide(); if (reopened && !quiet) toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
     }
-    function renderSideKeepFocus() {
+    // The other half of an "Alternative Question (OR)": the one named in the instructions ("… with Question 15.B")
+    const normQ = (x: any) => String(x ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const partnersOf = (i: number): number[] => { const m = String(paper.questions[i]?.checkingInstructions || '').match(/alternative question \(or\) with question\s+([\w.\-()]+?)(?:\.\s|\.$|,|;|\s|$)/i); if (!m) return []; const want = normQ(m[1]); return paper.questions.map((_: any, j: number) => j).filter(j => j !== i && normQ(paper.questions[j].questionNumber) === want); };
+    function renderSideKeepFocus(notify = true) {
         const a = document.activeElement as HTMLInputElement | null; const i = a?.classList.contains('osm-in') ? a.dataset.i : null; const v = a?.value;
         renderSide();
         if (i != null) { const n = sideEl.querySelector(`.osm-in[data-i="${i}"]`) as HTMLInputElement | null; if (n) { n.value = v ?? n.value; n.focus(); } }
-        toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
+        if (notify) toast('You changed a mark, so “Completed” was reopened — click it again when finished.', 'info');
     }
     // "your part": how many of YOUR questions are marked, and whether you have clicked Completed (your name turns green only then)
     function updateMine() {
@@ -1525,8 +1530,8 @@ button.osm-link{background:none;border:0;color:var(--osm-accent);cursor:pointer;
 .osm-mic{position:absolute;right:8px;bottom:8px;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 14px 0 11px;border:0;border-radius:99px;background:#2575fc;color:#fff;font:inherit;font-size:.82rem;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(37,117,252,.35)}.osm-mic:hover{background:#1c63dd}.osm-mic:disabled{opacity:.75;cursor:wait}
 .osm-mic.on{background:#e53935;box-shadow:0 0 0 0 rgba(229,57,53,.5);animation:osmpulse 1.1s infinite}@keyframes osmpulse{0%{box-shadow:0 0 0 0 rgba(229,57,53,.5)}100%{box-shadow:0 0 0 9px rgba(229,57,53,0)}}
 .osm-recdot{width:9px;height:9px;border-radius:50%;background:#fff}.osm-spin2{width:13px;height:13px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:osmrot .8s linear infinite}@keyframes osmrot{to{transform:rotate(360deg)}}
-.osm-q.na{opacity:.55;background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(150,160,180,.12) 8px 16px)}.osm-q.na .osm-in{background:transparent}
-.osm-rb.na{background:repeating-linear-gradient(135deg,transparent 0 4px,rgba(150,160,180,.25) 4px 8px);border-style:dashed}
+.osm-q.na{opacity:.9;background:#eaf3ff!important;border-left-color:#3b8bea!important}.osm-q.na .osm-qn{color:#2a6fc4!important}.osm-q.na .osm-in{background:transparent}
+.osm-rb.na{background:#cfe3fb!important;color:#2a6fc4!important;border-color:#3b8bea!important}
 .osm-nab{font-size:.68rem!important;padding:0 7px!important;min-width:0!important}.osm-nab.on{background:#6b7280!important;color:#fff!important;border-color:#6b7280!important}
 .osm-hist-back{position:fixed;inset:0;z-index:100001;background:rgba(15,20,40,.55);display:flex;align-items:center;justify-content:center;padding:18px}
 .osm-hist{background:#fff;color:#1b1f3b;border-radius:16px;width:min(720px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);font-family:Inter,Poppins,system-ui,sans-serif}
@@ -1680,6 +1685,7 @@ button.osm-link{font-size:11.5px}
 #osm-root .osm-chiprow .osm-rbtn{margin:0 0 0 auto!important;width:auto!important;min-height:0!important;height:22px!important;padding:0 9px!important;font-size:.68rem!important;font-weight:600;border-width:1px!important;border-radius:99px!important;display:inline-flex!important;align-items:center;gap:4px}
 #osm-root .osm-chiprow .osm-rbtn svg{width:11px!important;height:11px!important}#osm-root .osm-chiprow .osm-rbtn em{display:none}
 #osm-root .osm-tag.owner{background:#e9edf5;color:#3b4a66;font-weight:600;border:1px solid #d3d9e6}#osm-root .osm-tag.mine{font-weight:700}
+#osm-root .osm-qtop .osm-nab.on{background:#3b8bea!important;color:#fff!important;border-color:#3b8bea!important}
 `;
     document.head.appendChild(s);
 }
